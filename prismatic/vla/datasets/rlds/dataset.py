@@ -586,3 +586,142 @@ def make_interleaved_dataset(
     dataset.sample_weights = sample_weights
 
     return dataset, dataset_len, all_dataset_statistics
+
+
+
+
+# === My own implementation ===
+def return_rlds_dataset(
+    dataset_kwargs_list: List[Dict],
+    sample_weights: Optional[List[float]] = None,
+    *,
+    train: bool,
+    shuffle_buffer_size: int,
+    traj_transform_kwargs: Optional[Dict] = None,
+    frame_transform_kwargs: Optional[Dict] = None,
+    batch_size: Optional[int] = None,
+    balance_weights: bool = False,
+    traj_transform_threads: Optional[int] = None,
+    traj_read_threads: Optional[int] = None,
+) -> dl.DLataset:
+    """
+    Creates an interleaved dataset from list of dataset configs (kwargs). Returns a dataset of batched frames.
+
+    Args:
+        dataset_kwargs_list: list of kwargs, each element of which is passed to `make_dataset_from_rlds`.
+            "num_parallel_calls" and "num_parallel_reads" are overridden using `traj_transform_threads` and
+            `traj_read_threads`, respectively.
+        sample_weights: sampling weights for each dataset in list. If None, defaults to uniform.
+        train: whether this is a training or validation dataset.
+        shuffle_buffer_size: size of the dataset shuffle buffer (in number of frames).
+        traj_transform_kwargs: kwargs passed to `apply_trajectory_transforms`. "num_parallel_calls" is
+            overridden using `traj_transform_threads`.
+        frame_transform_kwargs: kwargs passed to `apply_frame_transforms`.
+        batch_size: batch size, if not provided output is not batched.
+        balance_weights: if True, the sample weights are multiplied by the number of frames in each dataset.
+            This makes it so that, if all the sample weights are equal, one full iteration through the interleaved
+            dataset will correspond to one full iteration through each individual dataset (only in expectation,
+            since in practice the sampling is random).
+        traj_transform_threads: total number of parallel calls for trajectory transforms, distributed across
+            datasets according to their sampling weights. If None, defaults to AUTOTUNE for every dataset.
+        traj_read_threads: total number of parallel read workers for trajectory transforms, distributed across
+            datasets according to their sampling weights. If None, defaults to AUTOTUNE for every dataset.
+    """
+    # Default to uniform sampling (if `sample_weights` is not specified)
+    if not sample_weights:
+        sample_weights = [1.0] * len(dataset_kwargs_list)
+
+    if len(sample_weights) != len(dataset_kwargs_list):
+        raise ValueError(f"sample_weights must be None or have length {len(dataset_kwargs_list)}.")
+
+    # Check valid `traj_transform_kwargs` and `frame_transform_kwargs`
+    if (traj_transform_kwargs is None) or (frame_transform_kwargs is None):
+        raise ValueError("Missing `traj_transform_kwargs` and `frame_transform_kwargs`!")
+
+    # Get Dataset Sizes
+    dataset_sizes, all_dataset_statistics = [], {}
+    for dataset_kwargs in dataset_kwargs_list:
+        data_kwargs = copy.deepcopy(dataset_kwargs)
+        if "dataset_frame_transform_kwargs" in data_kwargs:
+            data_kwargs.pop("dataset_frame_transform_kwargs")
+        _, dataset_statistics = make_dataset_from_rlds(**data_kwargs, train=train)
+        dataset_sizes.append(dataset_statistics["num_transitions"])
+        all_dataset_statistics[dataset_kwargs["name"]] = dataset_statistics
+
+    # Get the indices of the "primary" datasets (i.e., datasets with sample_weight == 1.0)
+    primary_dataset_indices = np.array([idx for idx in range(len(sample_weights)) if sample_weights[idx] == 1.0])
+
+    # Balance and Normalize Weights
+    if balance_weights:
+        sample_weights = np.array(sample_weights) * np.array(dataset_sizes)
+    sample_weights = np.array(sample_weights) / np.sum(sample_weights)
+    pprint_data_mixture(dataset_kwargs_list, sample_weights)
+
+    # Effective Dataset Length = Number of samples until each dataset has completed at least one epoch
+    #   =>> Note :: Only counting the "primary" datasets (i.e., datasets with sample_weight == 1.0)
+    dataset_len = int((np.array(dataset_sizes) / sample_weights)[primary_dataset_indices].max())
+
+    # Allocate Threads based on Weights
+    threads_per_dataset = allocate_threads(traj_transform_threads, sample_weights)
+    reads_per_dataset = allocate_threads(traj_read_threads, sample_weights)
+
+    overwatch.info("Threads per Dataset: %s", threads_per_dataset)
+    overwatch.info("Reads per Dataset: %s", reads_per_dataset)
+
+    # Construct Datasets
+    overwatch.info("Constructing datasets...")
+    datasets = []
+    for dataset_kwargs, threads, reads in zip(
+        dataset_kwargs_list,
+        threads_per_dataset,
+        reads_per_dataset,
+    ):
+        dataset_frame_transform_kwargs = (
+            dataset_kwargs.pop("dataset_frame_transform_kwargs")
+            if "dataset_frame_transform_kwargs" in dataset_kwargs
+            else {}
+        )
+        dataset, _ = make_dataset_from_rlds(
+            **dataset_kwargs,
+            train=train,
+            num_parallel_calls=threads,
+            num_parallel_reads=reads,
+            dataset_statistics=all_dataset_statistics[dataset_kwargs["name"]],
+        )
+        dataset = apply_trajectory_transforms(
+            dataset.repeat(),
+            **traj_transform_kwargs,
+            num_parallel_calls=threads,
+            train=train,
+        ).flatten(num_parallel_calls=threads)
+        dataset = apply_per_dataset_frame_transforms(dataset, **dataset_frame_transform_kwargs)
+        datasets.append(dataset)
+
+    # Interleave at the Frame Level
+    dataset: dl.DLataset = dl.DLataset.sample_from_datasets(datasets, sample_weights)
+
+    return dataset
+
+    # # Validation =>> fix a single shuffle buffer of data and cache it in RAM; prevents gradual memory increase!
+    # if not train:
+    #     dataset = dataset.take(shuffle_buffer_size).cache()
+
+    # # Shuffle the Dataset
+    # #   =>> IMPORTANT :: Shuffle AFTER .cache(), or else memory will still leak!
+    # dataset = dataset.shuffle(shuffle_buffer_size)
+
+    # # Apply Frame Transforms
+    # overwatch.info("Applying frame transforms on dataset...")
+    # dataset = apply_frame_transforms(dataset, **frame_transform_kwargs, train=train)
+
+    # # [Contract] When training VLA Policies, we let the Collator handle Batching!
+    # if batch_size is not None:
+    #     dataset = dataset.batch(batch_size)
+
+    # # Note =>> Seems to reduce memory usage without affecting speed?
+    # dataset = dataset.with_ram_budget(1)
+
+    # # Save for Later
+    # dataset.sample_weights = sample_weights
+
+    # return dataset, dataset_len, all_dataset_statistics

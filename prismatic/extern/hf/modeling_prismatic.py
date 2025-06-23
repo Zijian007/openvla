@@ -501,7 +501,7 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         self.bin_centers = (self.bins[:-1] + self.bins[1:]) / 2.0
 
         # Compute vocab size for de-tokenization -- revert added "multiple of"
-        self.vocab_size = self.config.text_config.vocab_size - self.config.pad_to_multiple_of
+        self.vocab_size = self.config.text_config.vocab_size - self.config.pad_to_multiple_of  #这里没care padding token, 因为self.vocab_size = 32000, 而不是加了padding token的32001. 
 
     def predict_action(
         self, input_ids: Optional[torch.LongTensor] = None, unnorm_key: Optional[str] = None, **kwargs: str

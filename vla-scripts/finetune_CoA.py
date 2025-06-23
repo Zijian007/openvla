@@ -19,9 +19,9 @@ Run with:
                                     ...
 """
 import sys,os
-print("Python executable:", sys.executable)
-print("Python path:", sys.path)
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# print("Python executable:", sys.executable)
+# print("Python path:", sys.path)
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 
 import os
@@ -45,9 +45,9 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 import wandb
 from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder
-from prismatic.util.data_utils import PaddedCollatorForActionPrediction
+from prismatic.util.data_utils import PaddedCollatorForActionPrediction, DataCollatorForCoASupervisedDataset
 from prismatic.vla.action_tokenizer import ActionTokenizer
-from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset
+from prismatic.vla.datasets import RLDSBatchTransform, RLDSDataset, EpisodicRLDSDataset
 from prismatic.vla.datasets.rlds.utils.data_utils import save_dataset_statistics
 
 from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
@@ -167,6 +167,9 @@ def finetune(cfg: FinetuneConfig) -> None:
         low_cpu_mem_usage=True,
         trust_remote_code=True,
     )
+    DEFAULT_ACT_TOKEN = "<A>"
+    num_added_toks = processor.tokenizer.add_tokens(DEFAULT_ACT_TOKEN)
+    
 
     # Device Placement =>> note that BitsAndBytes automatically handles for quantized training
     if cfg.use_quantization:
@@ -217,25 +220,45 @@ def finetune(cfg: FinetuneConfig) -> None:
         image_transform=processor.image_processor.apply_transform,
         prompt_builder_fn=PurePromptBuilder if "v01" not in cfg.vla_path else VicunaV15ChatPromptBuilder,
     )
-    vla_dataset = RLDSDataset(
-        cfg.data_root_dir,
-        cfg.dataset_name,
+    # vla_dataset = RLDSDataset(
+    #     cfg.data_root_dir,
+    #     cfg.dataset_name,
+    #     batch_transform,
+    #     resize_resolution=tuple(vla.module.config.image_sizes),
+    #     shuffle_buffer_size=cfg.shuffle_buffer_size,
+    #     image_aug=cfg.image_aug,
+    # )
+
+    episodic_vla_dataset = EpisodicRLDSDataset(
+        "/hdd/zijianwang/openvla/modified_libero_rlds",
+        "libero_goal_no_noops",
         batch_transform,
         resize_resolution=tuple(vla.module.config.image_sizes),
-        shuffle_buffer_size=cfg.shuffle_buffer_size,
-        image_aug=cfg.image_aug,
+        shuffle_buffer_size=100_000,
+        image_aug=True,
     )
 
     # [Important] Save Dataset Statistics =>> used to de-normalize actions for inference!
-    if distributed_state.is_main_process:
-        save_dataset_statistics(vla_dataset.dataset_statistics, run_dir)
+    # if distributed_state.is_main_process:
+    #     save_dataset_statistics(episodic_vla_dataset.dataset_statistics, run_dir)
 
     # Create Collator and DataLoader
-    collator = PaddedCollatorForActionPrediction(
-        processor.tokenizer.model_max_length, processor.tokenizer.pad_token_id, padding_side="right"
+    # collator = PaddedCollatorForActionPrediction(
+    #     processor.tokenizer.model_max_length, processor.tokenizer.pad_token_id, padding_side="right"
+    # )
+
+    collator = DataCollatorForCoASupervisedDataset(
+        128, processor.tokenizer.pad_token_id, padding_side="right"
     )
+    
+    # dataloader = DataLoader(
+    # episodic_vla_dataset,
+    # collate_fn=collator,
+    # batch_size=2,
+    # num_workers=0,  # Important =>> Set to 0 if using RLDS; TFDS rolls its own parallelism!
+    # )
     dataloader = DataLoader(
-        vla_dataset,
+        episodic_vla_dataset,
         batch_size=cfg.batch_size,
         sampler=None,
         collate_fn=collator,
