@@ -443,14 +443,16 @@ def make_single_dataset(
         **dataset_kwargs,
         train=train,
     )
-    dataset = apply_trajectory_transforms(dataset, **traj_transform_kwargs, train=train)
+    dataset = apply_trajectory_transforms(dataset.repeat(), **traj_transform_kwargs, train=train)
     dataset = apply_frame_transforms(dataset, **frame_transform_kwargs, train=train)
 
     # this seems to reduce memory usage without affecting speed
     dataset = dataset.with_ram_budget(1)
-
+    all_dataset_statistics = {}
+    all_dataset_statistics[dataset_kwargs["name"]] = dataset_statistics
     # save for later
-    return dataset, dataset_statistics["num_trajectories"], dataset_statistics
+    # return dataset, dataset_statistics["num_trajectories"], dataset_statistics
+    return dataset, dataset_statistics["num_trajectories"], all_dataset_statistics
 
 
 # === Core Initializer ===

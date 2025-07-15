@@ -183,16 +183,26 @@ class EpisodicRLDSDataset(RLDSDataset):
             yield out
 
 
+
+import random
 def reorganize_episode_to_CoA(episode):
     # episode is a list, each element is a dict. keys are 'pixel_values', 'input_ids', 'labels', 'dataset_name'. length of input_ids and labels are the same, which is len(text) + 7 + eos token.
-    print("Doing reorganize_episode_to_CoA")
+    # print("Doing reorganize_episode_to_CoA")
+
+    # random.seed(42)  # Fix random seed
+    start_index = random.randint(0, len(episode) - 5)
+    episode = episode[start_index:]
+    # print("cutting episode at index half", start_index)
+
     DEFAULT_ACT_TOKEN = "<A>"
+    EOS_token_id = 2
     initial_img = episode[0]['pixel_values']
     initial_text = episode[0]['input_ids'][:-8]
     dataset_name = episode[0]['dataset_name']
     action_chain = []
     action_sperate_token =  DEFAULT_ACT_TOKEN
     action_sperate_token_id = 32001
+    length = len(episode)
 
     for i in range(len(episode)):
         text = episode[i]['input_ids'][:-8]
@@ -203,13 +213,17 @@ def reorganize_episode_to_CoA(episode):
     
     # Convert to tensor
     action_chain = torch.tensor(action_chain)
+    # Add EOS token at the end of action chain
+
+    action_chain = torch.cat([action_chain, torch.tensor([EOS_token_id])])
     
     # Return initial image, text and the full action chain
     return {
         'pixel_values': initial_img,
         'input_ids': torch.cat([initial_text, action_chain]),
         'labels': torch.cat([initial_text, action_chain]),
-        'dataset_name': dataset_name
+        'dataset_name': dataset_name,
+        'length': length
     }
 
 

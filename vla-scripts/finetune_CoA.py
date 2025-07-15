@@ -54,8 +54,19 @@ from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction
 from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
 
+import logging
+
+
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()  # Print to console
+    ]
+)
 
 
 # # === Utilities ===
@@ -83,7 +94,7 @@ class FinetuneConfig:
     vla_path: str = "openvla/openvla-7b"                            # Path to OpenVLA model (on HuggingFace Hub)
 
     # Directory Paths
-    data_root_dir: Path = Path("/hdd/zijianwang/openvla/modified_libero_rlds/libero_spatial_no_noops")        # Path to Open-X dataset directory
+    data_root_dir: Path = Path("/hdd/zijianwang/openvla/modified_libero_rlds")        # Path to Open-X dataset directory
     dataset_name: str = "libero_spatial_no_noops"                                # Name of fine-tuning dataset (e.g., `droid_wipe`)
     run_root_dir: Path = Path("runs")                               # Path to directory to store logs & checkpoints
     adapter_tmp_dir: Path = Path("adapter-tmp")                     # Temporary directory for LoRA weights before fusing
@@ -92,6 +103,7 @@ class FinetuneConfig:
     batch_size: int = 1                                            # Fine-tuning batch size
     max_steps: int = 200_000                                        # Max number of fine-tuning steps
     save_steps: int = 5000                                          # Interval for checkpoint saving
+    input_length: int = 512                                        # Input length for the model
     learning_rate: float = 5e-4                                     # Fine-tuning learning rate
     grad_accumulation_steps: int = 1                                # Gradient accumulation steps
     image_aug: bool = True                                          # Whether to train with image augmentations
@@ -101,7 +113,7 @@ class FinetuneConfig:
                                                                     #   (If False, saves all checkpoints)
 
     # LoRA Arguments
-    use_lora: bool = True                                           # Whether to use LoRA fine-tuning
+    use_lora: bool = True                                         # Whether to use LoRA fine-tuning
     lora_rank: int = 3                                             # Rank of LoRA weight matrix
     lora_dropout: float = 0.0                                       # Dropout applied to LoRA weights
     use_quantization: bool = False                                  # Whether to 4-bit quantize VLA for LoRA fine-tuning
@@ -117,7 +129,8 @@ class FinetuneConfig:
 
 @draccus.wrap()
 def finetune(cfg: FinetuneConfig) -> None:
-    print(f"Fine-tuning OpenVLA Model `{cfg.vla_path}` on `{cfg.dataset_name}`")
+    logging.info(f"Fine-tuning OpenVLA Model `{cfg.vla_path}` on `{cfg.dataset_name}`")
+    logging.info(f"The dataset path is {cfg.data_root_dir}")
 
     # [Validate] Ensure GPU Available & Set Device / Distributed Context
     assert torch.cuda.is_available(), "Fine-tuning assumes at least one GPU is available!"
@@ -139,6 +152,8 @@ def finetune(cfg: FinetuneConfig) -> None:
         exp_id += f"--{cfg.run_id_note}"
     if cfg.image_aug:
         exp_id += "--image_aug"
+    import datetime
+    exp_id += f"--{datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}"
 
     # Start =>> Build Directories
     run_dir, adapter_dir = cfg.run_root_dir / exp_id, cfg.adapter_tmp_dir / exp_id
@@ -167,10 +182,10 @@ def finetune(cfg: FinetuneConfig) -> None:
         low_cpu_mem_usage=True,
         trust_remote_code=True,
     )
+    # Add a special token to separate action units
     DEFAULT_ACT_TOKEN = "<A>"
     num_added_toks = processor.tokenizer.add_tokens(DEFAULT_ACT_TOKEN)
     
-
     # Device Placement =>> note that BitsAndBytes automatically handles for quantized training
     if cfg.use_quantization:
         vla = prepare_model_for_kbit_training(vla)
@@ -230,8 +245,8 @@ def finetune(cfg: FinetuneConfig) -> None:
     # )
 
     episodic_vla_dataset = EpisodicRLDSDataset(
-        "/hdd/zijianwang/openvla/modified_libero_rlds",
-        "libero_goal_no_noops",
+        cfg.data_root_dir,
+        cfg.dataset_name,
         batch_transform,
         resize_resolution=tuple(vla.module.config.image_sizes),
         shuffle_buffer_size=100_000,
@@ -239,8 +254,8 @@ def finetune(cfg: FinetuneConfig) -> None:
     )
 
     # [Important] Save Dataset Statistics =>> used to de-normalize actions for inference!
-    # if distributed_state.is_main_process:
-    #     save_dataset_statistics(episodic_vla_dataset.dataset_statistics, run_dir)
+    if distributed_state.is_main_process:
+        save_dataset_statistics(episodic_vla_dataset.dataset_statistics, run_dir)
 
     # Create Collator and DataLoader
     # collator = PaddedCollatorForActionPrediction(
@@ -248,7 +263,7 @@ def finetune(cfg: FinetuneConfig) -> None:
     # )
 
     collator = DataCollatorForCoASupervisedDataset(
-        128, processor.tokenizer.pad_token_id, padding_side="right"
+        cfg.input_length, processor.tokenizer.pad_token_id, padding_side="right"
     )
     
     # dataloader = DataLoader(
