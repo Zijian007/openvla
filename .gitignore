@@ -151,3 +151,12 @@ data/
 # Rollout videos and wandb logs
 rollouts/
 wandb/
+adapter_tmp_dir/
+FT_res/
+vla-scripts/DPO/winner_trajectory
+vla-scripts/DPO/experiments
+vla-scripts/DPO/saved_obs
+vla-scripts/DPO/winner_trajectory_test
+
+experiments/robot/libero/experiments
+experiments/logs/
