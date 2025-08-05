@@ -3,7 +3,7 @@
 import math
 import os
 
-import imageio
+import imageio,time
 import numpy as np
 import tensorflow as tf
 from libero.libero import get_libero_path
@@ -56,6 +56,26 @@ def get_libero_image(obs, resize_size):
     img = img[::-1, ::-1]  # IMPORTANT: rotate 180 degrees to match train preprocessing
     img = resize_image(img, resize_size)
     return img
+
+
+def save_rollout_video_CoA(rollout_images, idx, success, task_description, log_file=None, num_act_units=100, task_id=None, task_suite_name = None, top_k=2):
+    """Saves an MP4 replay of an episode."""
+    rollout_dir = f"./rollouts/{task_suite_name}"
+    os.makedirs(rollout_dir, exist_ok=True)
+    processed_task_description = task_description.lower().replace(" ", "_").replace("\n", "_").replace(".", "_")[:50]
+    # DATE_TIME = time.strftime("%Y_%m_%d-%H_%M_%S")
+    # mp4_path = f"{rollout_dir}/{DATE_TIME}--task_id={task_id}--epi={idx}--num_act={num_act_units}--success={success}--task={processed_task_description}.mp4"
+    mp4_path = f"{rollout_dir}/{DATE_TIME}/task_id={task_id}_{processed_task_description}/epi={idx}--num_act={num_act_units}--top_k={top_k}--success={success}.mp4"
+    os.makedirs(os.path.dirname(mp4_path), exist_ok=True)
+    
+    video_writer = imageio.get_writer(mp4_path, fps=30)
+    for img in rollout_images:
+        video_writer.append_data(img)
+    video_writer.close()
+    print(f"Saved rollout MP4 at path {mp4_path}")
+    if log_file is not None:
+        log_file.write(f"Saved rollout MP4 at path {mp4_path}\n")
+    return mp4_path
 
 
 def save_rollout_video(rollout_images, idx, success, task_description, log_file=None):

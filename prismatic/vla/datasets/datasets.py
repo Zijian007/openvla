@@ -38,7 +38,7 @@ class RLDSBatchTransform:
     def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
         """Converts a RLDS batch to the format expected by the OpenVLA collator/models."""
         dataset_name, action = rlds_batch["dataset_name"], rlds_batch["action"][0]
-        img = Image.fromarray(rlds_batch["observation"]["image_primary"][0])
+        img = Image.fromarray(rlds_batch["observation"]["image_primary"][0])  #rlds_batch["observation"]["image_primary"][0] is a array of shape (224, 224, 3), where the value is raw pixel between 0 and 255
         lang = rlds_batch["task"]["language_instruction"].decode().lower()
 
         # Construct Chat-based Prompt =>> Input is default query + language instruction, output are the action tokens
@@ -77,6 +77,7 @@ class RLDSDataset(IterableDataset):
         shuffle_buffer_size: int = 256_000,
         train: bool = True,
         image_aug: bool = False,
+        if_random_start: bool = True,
     ) -> None:
         """Lightweight wrapper around RLDS TFDS Pipeline for use with PyTorch/OpenVLA Data Loaders."""
         self.data_root_dir, self.data_mix, self.batch_transform = data_root_dir, data_mix, batch_transform
@@ -137,6 +138,7 @@ class RLDSDataset(IterableDataset):
         # fmt: on
 
         # Initialize RLDS Dataset
+        self.if_random_start = if_random_start
         self.dataset, self.dataset_length, self.dataset_statistics = self.make_dataset(rlds_config)
 
         # self.rlds_dataset = self.make_dataset_from_rlds(rlds_config)
@@ -179,37 +181,55 @@ class EpisodicRLDSDataset(RLDSDataset):
                 self.batch_transform(tree_map(lambda x: x[i], rlds_batch))  # noqa: B023
                 for i in range(rlds_batch["action"].shape[0])
             ]
-            out = reorganize_episode_to_CoA(out)
+            out = reorganize_episode_to_CoA(out, if_random_start=self.if_random_start)
             yield out
 
 
-def reorganize_episode_to_CoA(episode):
+
+import random
+def reorganize_episode_to_CoA(episode, if_random_start=True):
     # episode is a list, each element is a dict. keys are 'pixel_values', 'input_ids', 'labels', 'dataset_name'. length of input_ids and labels are the same, which is len(text) + 7 + eos token.
-    print("Doing reorganize_episode_to_CoA")
+    # print("Doing reorganize_episode_to_CoA")
+    if if_random_start:
+        # random.seed(42)  # Fix random seed
+        print("random start")
+        start_index = random.randint(0, len(episode) - 5)
+        episode = episode[start_index:]
+    else:
+        start_index = 0
+        episode = episode[start_index:]
+    # print("cutting episode at index half", start_index)
+
     DEFAULT_ACT_TOKEN = "<A>"
+    EOS_token_id = 2
     initial_img = episode[0]['pixel_values']
     initial_text = episode[0]['input_ids'][:-8]
     dataset_name = episode[0]['dataset_name']
     action_chain = []
     action_sperate_token =  DEFAULT_ACT_TOKEN
     action_sperate_token_id = 32001
-
+    length = len(episode)
+    replay_images = []
     for i in range(len(episode)):
         text = episode[i]['input_ids'][:-8]
         assert torch.equal(text, initial_text), f"Text at position {i} differs from first text"
         action = episode[i]['input_ids'][-8:-1] # a tensor of shape (7,), like tensor([31867, 31884, 31872, 31891, 31902, 31928, 31744])
         action_chain.extend(action.tolist())  # Add the action tokens
         action_chain.append(action_sperate_token_id)  # Add separator token after each action
-    
+        replay_images.append(np.array(episode[i]['pixel_values'][3:6]))
     # Convert to tensor
     action_chain = torch.tensor(action_chain)
+    
     
     # Return initial image, text and the full action chain
     return {
         'pixel_values': initial_img,
         'input_ids': torch.cat([initial_text, action_chain]),
         'labels': torch.cat([initial_text, action_chain]),
-        'dataset_name': dataset_name
+        'dataset_name': dataset_name,
+        'length': length,   
+        'replay_images': replay_images,
+        "text": initial_text
     }
 
 
