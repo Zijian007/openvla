@@ -14,11 +14,13 @@ from prismatic.extern.hf.configuration_prismatic import OpenVLAConfig
 from prismatic.extern.hf.modeling_prismatic import OpenVLAForActionPrediction
 from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, PrismaticProcessor
 
+from peft import PeftModel, PeftConfig
+
 # Initialize important constants and pretty-printing mode in NumPy.
 ACTION_DIM = 7
 DATE = time.strftime("%Y_%m_%d")
 DATE_TIME = time.strftime("%Y_%m_%d-%H_%M_%S")
-DEVICE = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+# DEVICE = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 np.set_printoptions(formatter={"float": lambda x: "{0:0.3f}".format(x)})
 
 # Initialize system prompt for OpenVLA v0.1.
@@ -54,10 +56,57 @@ def get_vla(cfg):
     # Note: `.to()` is not supported for 8-bit or 4-bit bitsandbytes models, but the model will
     #       already be set to the right devices and casted to the correct dtype upon loading.
     if not cfg.load_in_8bit and not cfg.load_in_4bit:
-        vla = vla.to(DEVICE)
+        vla = vla.to(cfg.device)
 
     # Load dataset stats used during finetuning (for action un-normalization).
     dataset_statistics_path = os.path.join(cfg.pretrained_checkpoint, "dataset_statistics.json")
+    if os.path.isfile(dataset_statistics_path):
+        with open(dataset_statistics_path, "r") as f:
+            norm_stats = json.load(f)
+        vla.norm_stats = norm_stats
+    else:
+        print(
+            "WARNING: No local dataset_statistics.json file found for current checkpoint.\n"
+            "You can ignore this if you are loading the base VLA (i.e. not fine-tuned) checkpoint."
+            "Otherwise, you may run into errors when trying to call `predict_action()` due to an absent `unnorm_key`."
+        )
+
+    return vla
+
+
+def get_vla_via_lora(cfg):
+    """Loads and returns a VLA model from checkpoint."""
+    # Load VLA checkpoint.
+    print("[*] Instantiating Pretrained VLA model")
+    print("[*] Loading in BF16 with Flash-Attention Enabled")
+
+    # Register OpenVLA model to HF Auto Classes (not needed if the model is on HF Hub)
+    AutoConfig.register("openvla", OpenVLAConfig)
+    AutoImageProcessor.register(OpenVLAConfig, PrismaticImageProcessor)
+    AutoProcessor.register(OpenVLAConfig, PrismaticProcessor)
+    AutoModelForVision2Seq.register(OpenVLAConfig, OpenVLAForActionPrediction)
+
+    lora_config = PeftConfig.from_pretrained(cfg.lora_path)
+    base_vla_path = lora_config.base_model_name_or_path
+
+    base_vla = AutoModelForVision2Seq.from_pretrained(
+        base_vla_path,
+        attn_implementation="flash_attention_2",
+        torch_dtype=torch.bfloat16,
+        load_in_8bit=cfg.load_in_8bit,
+        load_in_4bit=cfg.load_in_4bit,
+        low_cpu_mem_usage=True,
+        trust_remote_code=True,
+    )
+    # Move model to device.
+    # Note: `.to()` is not supported for 8-bit or 4-bit bitsandbytes models, but the model will
+    #       already be set to the right devices and casted to the correct dtype upon loading.
+    if not cfg.load_in_8bit and not cfg.load_in_4bit:
+        base_vla = base_vla.to(cfg.device)
+
+    vla = PeftModel.from_pretrained(base_vla, cfg.lora_path, is_trainable=True)
+    # Load dataset stats used during finetuning (for action un-normalization).
+    dataset_statistics_path = os.path.join(base_vla_path, "dataset_statistics.json")
     if os.path.isfile(dataset_statistics_path):
         with open(dataset_statistics_path, "r") as f:
             norm_stats = json.load(f)
@@ -120,9 +169,7 @@ def crop_and_resize(image, crop_scale, batch_size):
     # Convert back to 3D Tensor (H, W, C)
     if expanded_dims:
         image = image[0]
-
     return image
-
 
 def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False):
     """Generates an action with the VLA policy."""
@@ -163,8 +210,144 @@ def get_vla_action(vla, processor, base_vla_name, obs, task_label, unnorm_key, c
         prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
 
     # Process inputs.
-    inputs = processor(prompt, image).to(DEVICE, dtype=torch.bfloat16)
+    inputs = processor(prompt, image).to(vla.device, dtype=torch.bfloat16)
 
     # Get action.
     action = vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
     return action
+
+def get_vla_action_ids(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False):
+    """Generates an action with the VLA policy."""
+    image = Image.fromarray(obs["full_image"])
+    image = image.convert("RGB")
+
+    # (If trained with image augmentations) Center crop image and then resize back up to original size.
+    # IMPORTANT: Let's say crop scale == 0.9. To get the new height and width (post-crop), multiply
+    #            the original height and width by sqrt(0.9) -- not 0.9!
+    if center_crop:
+        batch_size = 1
+        crop_scale = 0.9
+
+        # Convert to TF Tensor and record original data type (should be tf.uint8)
+        image = tf.convert_to_tensor(np.array(image))
+        orig_dtype = image.dtype
+
+        # Convert to data type tf.float32 and values between [0,1]
+        image = tf.image.convert_image_dtype(image, tf.float32)
+
+        # Crop and then resize back to original size
+        image = crop_and_resize(image, crop_scale, batch_size)
+
+        # Convert back to original data type
+        image = tf.clip_by_value(image, 0, 1)
+        image = tf.image.convert_image_dtype(image, orig_dtype, saturate=True)
+
+        # Convert back to PIL Image
+        image = Image.fromarray(image.numpy())
+        image = image.convert("RGB")
+
+    # Build VLA prompt
+    if "openvla-v01" in base_vla_name:  # OpenVLA v0.1
+        prompt = (
+            f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT:"
+        )
+    else:  # OpenVLA
+        prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
+
+    # Process inputs.
+    inputs = processor(prompt, image).to(vla.device, dtype=torch.bfloat16)
+
+    # Get action.
+    action_ids = vla.predicted_action_token_ids(**inputs, unnorm_key=unnorm_key, do_sample=False)
+    return action_ids
+
+
+def get_vla_CoA(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, num_act_units:int=100):
+    """Generates an action with the VLA policy."""
+    image = Image.fromarray(obs["full_image"])
+    image = image.convert("RGB")
+
+    # (If trained with image augmentations) Center crop image and then resize back up to original size.
+    # IMPORTANT: Let's say crop scale == 0.9. To get the new height and width (post-crop), multiply
+    #            the original height and width by sqrt(0.9) -- not 0.9!
+    if center_crop:
+        batch_size = 1
+        crop_scale = 0.9
+
+        # Convert to TF Tensor and record original data type (should be tf.uint8)
+        image = tf.convert_to_tensor(np.array(image))
+        orig_dtype = image.dtype
+
+        # Convert to data type tf.float32 and values between [0,1]
+        image = tf.image.convert_image_dtype(image, tf.float32)
+
+        # Crop and then resize back to original size
+        image = crop_and_resize(image, crop_scale, batch_size)
+
+        # Convert back to original data type
+        image = tf.clip_by_value(image, 0, 1)
+        image = tf.image.convert_image_dtype(image, orig_dtype, saturate=True)
+
+        # Convert back to PIL Image
+        image = Image.fromarray(image.numpy())
+        image = image.convert("RGB")
+
+    # Build VLA prompt
+    if "openvla-v01" in base_vla_name:  # OpenVLA v0.1
+        prompt = (
+            f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT:"
+        )
+    else:  # OpenVLA
+        prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
+
+    # Process inputs.
+    inputs = processor(prompt, image).to(vla.device, dtype=torch.bfloat16)
+
+    # Get action.
+    action = vla.get_CoA(**inputs, unnorm_key=unnorm_key, num_act_units=num_act_units)
+    return action
+
+
+
+def get_input(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, num_act_units:int=100):
+    """Generates an action with the VLA policy."""
+    image = Image.fromarray(obs["full_image"])
+    image = image.convert("RGB")
+
+    # (If trained with image augmentations) Center crop image and then resize back up to original size.
+    # IMPORTANT: Let's say crop scale == 0.9. To get the new height and width (post-crop), multiply
+    #            the original height and width by sqrt(0.9) -- not 0.9!
+    if center_crop:
+        batch_size = 1
+        crop_scale = 0.9
+
+        # Convert to TF Tensor and record original data type (should be tf.uint8)
+        image = tf.convert_to_tensor(np.array(image))
+        orig_dtype = image.dtype
+
+        # Convert to data type tf.float32 and values between [0,1]
+        image = tf.image.convert_image_dtype(image, tf.float32)
+
+        # Crop and then resize back to original size
+        image = crop_and_resize(image, crop_scale, batch_size)
+
+        # Convert back to original data type
+        image = tf.clip_by_value(image, 0, 1)
+        image = tf.image.convert_image_dtype(image, orig_dtype, saturate=True)
+
+        # Convert back to PIL Image
+        image = Image.fromarray(image.numpy())
+        image = image.convert("RGB")
+
+    # Build VLA prompt
+    if "openvla-v01" in base_vla_name:  # OpenVLA v0.1
+        prompt = (
+            f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT:"
+        )
+    else:  # OpenVLA
+        prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
+
+    # Process inputs.
+    inputs = processor(prompt, image).to(vla.device, dtype=torch.bfloat16)
+
+    return inputs

@@ -1,5 +1,4 @@
 """Utils for evaluating robot policies in various environments."""
-
 import os
 import random
 import time
@@ -9,14 +8,18 @@ import torch
 
 from experiments.robot.openvla_utils import (
     get_vla,
+    get_vla_via_lora,
     get_vla_action,
+    get_vla_action_ids,
+    get_vla_CoA
 )
+from typing import List,Optional,Union,Dict,Any
 
 # Initialize important constants and pretty-printing mode in NumPy.
 ACTION_DIM = 7
 DATE = time.strftime("%Y_%m_%d")
 DATE_TIME = time.strftime("%Y_%m_%d-%H_%M_%S")
-DEVICE = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+# DEVICE = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 np.set_printoptions(formatter={"float": lambda x: "{0:0.3f}".format(x)})
 
 # Initialize system prompt for OpenVLA v0.1.
@@ -24,7 +27,6 @@ OPENVLA_V01_SYSTEM_PROMPT = (
     "A chat between a curious user and an artificial intelligence assistant. "
     "The assistant gives helpful, detailed, and polite answers to the user's questions."
 )
-
 
 def set_seed_everywhere(seed: int):
     """Sets the random seed for Python, NumPy, and PyTorch functions."""
@@ -36,7 +38,6 @@ def set_seed_everywhere(seed: int):
     torch.backends.cudnn.benchmark = False
     os.environ["PYTHONHASHSEED"] = str(seed)
 
-
 def get_model(cfg, wrap_diffusion_policy_for_droid=False):
     """Load model for evaluation."""
     if cfg.model_family == "openvla":
@@ -45,7 +46,6 @@ def get_model(cfg, wrap_diffusion_policy_for_droid=False):
         raise ValueError("Unexpected `model_family` found in config.")
     print(f"Loaded model: {type(model)}")
     return model
-
 
 def get_image_resize_size(cfg):
     """
@@ -59,7 +59,6 @@ def get_image_resize_size(cfg):
         raise ValueError("Unexpected `model_family` found in config.")
     return resize_size
 
-
 def get_action(cfg, model, obs, task_label, processor=None):
     """Queries the model to get an action."""
     if cfg.model_family == "openvla":
@@ -71,6 +70,28 @@ def get_action(cfg, model, obs, task_label, processor=None):
         raise ValueError("Unexpected `model_family` found in config.")
     return action
 
+def get_action_ids(cfg, model, obs, task_label, processor=None):
+    """Queries the model to get an action."""
+    if cfg.model_family == "openvla":
+        action_ids = get_vla_action_ids(
+            model, processor, cfg.pretrained_checkpoint, obs, task_label, cfg.unnorm_key, center_crop=cfg.center_crop
+        )
+        assert action_ids.shape == (ACTION_DIM,)
+    else:
+        raise ValueError("Unexpected `model_family` found in config.")
+    return action_ids
+
+def get_CoA(cfg, model, obs, task_label, processor=None, num_act_units:int=100)->List[np.ndarray]:
+    """Queries the model to get an action."""
+    if cfg.model_family == "openvla":
+        action = get_vla_CoA(
+            model, processor, cfg.pretrained_checkpoint, obs, task_label, cfg.unnorm_key, center_crop = cfg.center_crop, num_act_units=num_act_units
+        )
+        # assert action.shape == (ACTION_DIM,), f"Action shape: {action.shape}"
+        # assert action.shape[1] % (ACTION_DIM + 1) == 0, f"Action shape {action.shape} is not divisible by {ACTION_DIM + 1}"
+    else:
+        raise ValueError("Unexpected `model_family` found in config.")
+    return action
 
 def normalize_gripper_action(action, binarize=True):
     """
@@ -90,7 +111,6 @@ def normalize_gripper_action(action, binarize=True):
         action[..., -1] = np.sign(action[..., -1])
 
     return action
-
 
 def invert_gripper_action(action):
     """

@@ -46,6 +46,12 @@ class ActionTokenizer:
         else:
             return self.tokenizer.batch_decode((self.tokenizer.vocab_size - discretized_action).tolist())
 
+    def get_ids(self, action: np.ndarray):
+        """Clip & bin actions to *the last `n_bins` tokens* of the vocabulary (e.g., tokenizer.vocab[-256:])."""
+        action = np.clip(action, a_min=float(self.min_action), a_max=float(self.max_action))
+        discretized_action = np.digitize(action, self.bins)
+        return list(self.tokenizer.vocab_size - discretized_action)
+
     def decode_token_ids_to_actions(self, action_token_ids: np.ndarray) -> np.ndarray:
         """
         Returns continuous actions for discrete action token IDs.

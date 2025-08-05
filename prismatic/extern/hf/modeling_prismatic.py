@@ -535,22 +535,6 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
 
         return actions
 
-
-    # def predict_CoA(
-    #     self, input_ids: Optional[torch.LongTensor] = None, unnorm_key: Optional[str] = None, num_act_units: int = 1, **kwargs: str
-    # ) -> np.ndarray:
-    #     """Thin wrapper around .generate() that decodes predicted actions and unnormalizes them."""
-    #     # If the special empty token ('') does not already appear after the colon (':') token in the prompt
-    #     # (after "OUT:" or "ASSISTANT:"), insert it to match the inputs seen at training time
-    #     if not torch.all(input_ids[:, -1] == 29871):
-    #         input_ids = torch.cat(
-    #             (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
-    #         )
-
-    #     # Run VLA inference
-    #     generated_ids = self.generate(input_ids, max_new_tokens=(self.get_action_dim(unnorm_key)+1)*num_act_units, **kwargs)
-    #     return generated_ids
-
     @staticmethod
     def _check_unnorm_key(norm_stats: Dict[str, Dict[str, Any]], unnorm_key: Optional[str]) -> str:
         if unnorm_key is None:
