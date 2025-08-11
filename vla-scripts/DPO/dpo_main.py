@@ -38,7 +38,7 @@ from src.data_process import TrajectoryDataset
 from experiments.robot.robot_utils import get_model
 
 
-def setup_data_loader(cfg, processor, model, resize_size):
+def setup_data_loader(cfg, processor, model, resize_size, stream_length):
     """Setup the training data loader."""
     print("[*] Setting up dataset and data loader...")
     
@@ -51,7 +51,7 @@ def setup_data_loader(cfg, processor, model, resize_size):
         device=cfg.device, 
         model=model, 
         img_size=resize_size,
-        stream_length=5
+        stream_length=cfg.stream_length
     )
     
     # Create data collator
@@ -78,8 +78,21 @@ def main():
     parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
     parser.add_argument("--learning-rate", type=float, default=0.0005, help="Learning rate")
     parser.add_argument("--dpo-beta", type=float, default=0.1, help="DPO beta parameter")
+    parser.add_argument("--stream-length", type=int, default=5, help="Stream length for trajectory processing")
     parser.add_argument("--use-wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="openvla_CoA_DPO", help="Weights & Biases project name")
+    parser.add_argument("--wandb-entity", type=str, default="15652388600", help="Weights & Biases entity name")
     parser.add_argument("--run-id-note", type=str, default=None, help="Additional note for run ID")
+    
+    # Path configuration arguments (all optional with defaults)
+    parser.add_argument("--root-dir", type=str, default="/mnt/sda/home/zijianwang", help="Root directory")
+    parser.add_argument("--pretrained-checkpoint", type=str, default="", help="Path to pretrained checkpoint (uses default if empty)")
+    parser.add_argument("--lora-path", type=str, default="", help="Path to LoRA adapter (uses default if empty)")
+    parser.add_argument("--base-vla-path", type=str, default="", help="Path to base VLA model (uses default if empty)")
+    parser.add_argument("--winner-trajectory-path", type=str, default="", help="Path to winner trajectory data (uses default if empty)")
+    parser.add_argument("--adapter-tmp-dir", type=str, default="", help="Directory for saving adapters (uses default if empty)")
+    parser.add_argument("--run-root-dir", type=str, default="", help="Root directory for run outputs (uses default if empty)")
+    
     args = parser.parse_args()
 
     print("[*] Starting OpenVLA DPO Training")
@@ -87,14 +100,24 @@ def main():
     # Initialize configuration for policy model
     print("[*] Initializing configuration...")
     model_cfg = GenerateConfig(
+        root_dir=args.root_dir,
         device=args.device,
         max_steps=args.max_steps,
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         dpo_beta=args.dpo_beta,
+        stream_length=args.stream_length,
         use_wandb=args.use_wandb,
+        wandb_project=args.wandb_project,
+        wandb_entity=args.wandb_entity,
         run_id_note=args.run_id_note,
-        grad_accumulation_steps=1
+        grad_accumulation_steps=1,
+        pretrained_checkpoint=args.pretrained_checkpoint,
+        lora_path=args.lora_path,
+        base_vla_path=args.base_vla_path,
+        winner_trajectory_path=args.winner_trajectory_path,
+        adapter_tmp_dir=args.adapter_tmp_dir,
+        run_root_dir=args.run_root_dir
     )
     
     # Setup policy model (with LoRA)
@@ -107,11 +130,21 @@ def main():
     
     # Initialize configuration for reference model
     print("[*] Loading reference model...")
-    ref_config = GenerateConfig(device=args.ref_device)
-    ref_model = get_model(ref_config)
+    ref_config = GenerateConfig(
+        root_dir=args.root_dir,
+        device=args.ref_device,
+        pretrained_checkpoint=args.pretrained_checkpoint,
+        lora_path=args.lora_path,
+        base_vla_path=args.base_vla_path,
+        winner_trajectory_path=args.winner_trajectory_path,
+        adapter_tmp_dir=args.adapter_tmp_dir,
+        run_root_dir=args.run_root_dir
+    )
+    # ref_model = get_model(ref_config)
+    ref_model = setup_vla_model_with_lora(ref_config)
     
     # Setup data loader
-    train_dataloader = setup_data_loader(model_cfg, processor, model, resize_size)
+    train_dataloader = setup_data_loader(model_cfg, processor, model, resize_size, model_cfg.stream_length)
     
     # Verify setup with a test batch
     print("[*] Verifying data loader setup...")
@@ -121,14 +154,14 @@ def main():
     print(f"Pixel values shape: {test_batch['pixel_values'].shape}")
     
     # Test forward pass
-    print("[*] Testing forward pass...")
-    with torch.no_grad():
-        pred_test = model.forward(
-            input_ids=test_batch["prompt_input_ids"].to(model_cfg.device), 
-            attention_mask=test_batch["chosen_attention_mask"].to(model_cfg.device), 
-            pixel_values=test_batch["pixel_values"].to(model_cfg.device)
-        )
-    print(f"Model output keys: {pred_test.keys()}")
+    # print("[*] Testing forward pass...")
+    # with torch.no_grad():
+    #     pred_test = model.forward(
+    #         input_ids=test_batch["prompt_input_ids"].to(model_cfg.device), 
+    #         attention_mask=test_batch["chosen_attention_mask"].to(model_cfg.device), 
+    #         pixel_values=test_batch["pixel_values"].to(model_cfg.device)
+    #     )
+    # print(f"Model output keys: {pred_test.keys()}")
     
     # Start DPO training
     print("[*] Starting DPO training...")

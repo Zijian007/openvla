@@ -49,7 +49,7 @@ class TrajectoryDataset(Dataset):
     def get_winner_completion_ids(self, traj, start_idx):
         action_chain = []
         action_sperate_token_id = 32001 # <A>
-        for action in traj["action"][start_idx:start_idx+self.stream_length]:
+        for action in traj["action"][start_idx:start_idx + self.stream_length]:
             action_chain.extend(action.tolist())  # Add the action tokens
             action_chain.append(action_sperate_token_id)  # Add separator token after each action
             # Ensure action_chain length is a multiple of 8
@@ -69,7 +69,8 @@ class TrajectoryDataset(Dataset):
             )
 
         initial_state['input_ids'] = input_ids
-        max_new_tokens=(self.model.get_action_dim(self.cfg.unnorm_key)+1)*self.stream_length
+        max_new_tokens = (self.model.get_action_dim(self.cfg.unnorm_key)+1)*self.stream_length
+        assert self.model.get_action_dim(self.cfg.unnorm_key) == 7, f"Action dim {self.model.get_action_dim(self.cfg.unnorm_key)} is not 7"
         generated_ids = self.model.generate(max_new_tokens = max_new_tokens, **initial_state, do_sample = True, top_k = 1)
         assert (generated_ids.shape[1] - input_ids.shape[1]) % (ACTION_DIM + 1) == 0, f"Action shape {generated_ids.shape} is not divisible by {ACTION_DIM + 1}"
         chain = generated_ids[:,input_ids.shape[1]:]
@@ -112,7 +113,8 @@ class TrajectoryDataset(Dataset):
         pkl_files = [f for f in os.listdir(trajectory_folder_path) if f.endswith(".pkl")]
         # Sort pkl files by step number
         pkl_files.sort(key=lambda x: int(re.search(r'step_(\d+)\.pkl', x).group(1)))
-        start_idx = random.randint(0, len(pkl_files) - 5)
+        # start_idx = random.randint(0, len(pkl_files) - 5)
+        start_idx = 0
 
         for i in range(start_idx, len(pkl_files)):
             with open(os.path.join(trajectory_folder_path, pkl_files[i]), "rb") as f:

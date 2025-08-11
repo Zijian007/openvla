@@ -160,3 +160,7 @@ vla-scripts/DPO/winner_trajectory_test
 
 experiments/robot/libero/experiments
 experiments/logs/
+
+DPO_adapter_tmp_dir
+
+vla-scripts/DPO/src/experiments

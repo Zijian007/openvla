@@ -62,7 +62,7 @@ def setup_logging_and_environment(cfg, model) -> Tuple:
         processor = get_processor(cfg)
 
     # Initialize local logging
-    run_id = f"EVAL-{cfg.task_suite_name}-{cfg.model_family}-{DATE_TIME}"
+    run_id = f"DPO-{cfg.task_suite_name}-{cfg.model_family}-{DATE_TIME}"
     if cfg.run_id_note is not None:
         run_id += f"--{cfg.run_id_note}"
     os.makedirs(cfg.local_log_dir, exist_ok=True)
@@ -70,13 +70,6 @@ def setup_logging_and_environment(cfg, model) -> Tuple:
     log_file = open(local_log_filepath, "w")
     print(f"Logging to local log file: {local_log_filepath}")
 
-    # Initialize Weights & Biases logging as well
-    if cfg.use_wandb:
-        wandb.init(
-            entity=cfg.wandb_entity,
-            project=cfg.wandb_project,
-            name=run_id,
-        )
 
     # Initialize LIBERO task suite
     benchmark_dict = benchmark.get_benchmark_dict()

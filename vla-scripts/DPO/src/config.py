@@ -30,14 +30,14 @@ class GenerateConfig:
 
     dataset_name: str = "libero_10_no_noops"
 
-    pretrained_checkpoint: Union[str, Path] = None
-    lora_path: str = None
-    base_vla_path: str = None
+    pretrained_checkpoint: Union[str, Path] = ""
+    lora_path: str = ""
+    base_vla_path: str = ""
 
-    winner_trajectory_path: str = None
+    winner_trajectory_path: str = ""
 
-    adapter_tmp_dir: str = None
-    run_root_dir: str = None
+    adapter_tmp_dir: str = ""
+    run_root_dir: str = ""
 
     #################################################################################################################
     load_in_8bit: bool = False                       # (For OpenVLA only) Load with 8-bit quantization
@@ -51,6 +51,7 @@ class GenerateConfig:
     learning_rate: float = 0.0005
     max_steps: int = 10000
     dpo_beta: float = 0.1
+    stream_length: int = 5
     #################################################################################################################
     # LIBERO environment-specific parameters
     #################################################################################################################
@@ -76,29 +77,30 @@ class GenerateConfig:
 
     def __post_init__(self):
         """Initialize derived paths after object creation."""
-        if self.pretrained_checkpoint is None:
+        # Set unnorm_key to task_suite_name if not explicitly set
+        self.unnorm_key = self.task_suite_name
+        
+        # Set default paths if they are empty
+        if not self.pretrained_checkpoint:
             self.pretrained_checkpoint = os.path.join(
                 self.root_dir, 
                 "openvla/FT_res/openvla-7b-finetuned-libero-10+libero_10_no_noops+b4+lr-0.0005+lora-r48+dropout-0.0--image_aug--2025-07-18_19-26-25"
             )
         
-        if self.lora_path is None:
+        if not self.lora_path:
             self.lora_path = os.path.join(
                 self.root_dir, 
                 "openvla/adapter_tmp_dir/openvla-7b-finetuned-libero-10+libero_10_no_noops+b4+lr-0.0005+lora-r48+dropout-0.0--image_aug--2025-07-18_19-26-25"
             )
         
-        if self.base_vla_path is None:
+        if not self.base_vla_path:
             self.base_vla_path = os.path.join(self.root_dir, "HF_CACHE/openvla-7b-finetuned-libero-10")
             
-        if self.winner_trajectory_path is None:
+        if not self.winner_trajectory_path:
             self.winner_trajectory_path = os.path.join(self.root_dir, "openvla/vla-scripts/DPO/winner_trajectory")
             
-        if self.adapter_tmp_dir is None:
-            self.adapter_tmp_dir = os.path.join(self.root_dir, "openvla/adapter_tmp_dir")
+        if not self.adapter_tmp_dir:
+            self.adapter_tmp_dir = os.path.join(self.root_dir, "openvla/DPO_adapter_tmp_dir")
             
-        if self.run_root_dir is None:
+        if not self.run_root_dir:
             self.run_root_dir = os.path.join(self.root_dir, "openvla/DPO_res")
-
-        # Set unnorm_key to task_suite_name if not explicitly set
-        self.unnorm_key = self.task_suite_name

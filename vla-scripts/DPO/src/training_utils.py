@@ -114,7 +114,7 @@ def train_dpo(model, ref_model, train_dataloader, cfg, if_not_demo=False):
     os.makedirs(adapter_dir, exist_ok=True)
     
     if if_not_demo:
-        wandb.init(entity=cfg.wandb_entity, project=cfg.wandb_project, name=f"dpo+{exp_id}")
+        wandb.init(entity=cfg.wandb_entity, project=cfg.wandb_project, name=f"DPO+{exp_id}")
     
     # 获取模型所在的device
     policy_device = next(model.parameters()).device

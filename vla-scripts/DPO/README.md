@@ -19,49 +19,64 @@ DPO/
 
 ## Quick Start
 
-1. **Test imports** (optional but recommended):
+1. **Run DPO training** using the shell script (recommended):
    ```bash
-   cd /mnt/sda/home/zijianwang/openvla/vla-scripts/DPO
-   python test_imports.py
+   cd /mnt/sda/home/zijianwang/openvla
+   bash scripts_dpo_10.sh
    ```
 
-2. **Run DPO training** with default settings:
+2. **Run manually** with default paths (minimal command):
    ```bash
-   python dpo_main.py
+   cd /mnt/sda/home/zijianwang/openvla
+   python vla-scripts/DPO/dpo_main.py --use-wandb
    ```
 
-3. **Run with custom parameters**:
+3. **Run manually** with custom parameters (all paths will use defaults if not specified):
    ```bash
-   python dpo_main.py \
-     --device cuda:2 \
+   cd /mnt/sda/home/zijianwang/openvla
+   python vla-scripts/DPO/dpo_main.py \
+     --device cuda:3 \
      --ref-device cuda:0 \
-     --max-steps 5000 \
+     --max-steps 10000 \
      --batch-size 8 \
-     --learning-rate 0.001 \
-     --dpo-beta 0.2 \
+     --stream-length 20 \
      --use-wandb \
-     --run-id-note "experiment_1"
+     --wandb-project "openvla_CoA_DPO" \
+     --wandb-entity "15652388600"
    ```
 
 ## Configuration
 
 The main configuration is handled by the `GenerateConfig` class in `src/config.py`. Key parameters include:
 
-- **Model paths**: Automatically configured based on `root_dir`
+- **Model paths**: Automatically set to defaults, can be overridden via command line arguments
 - **LoRA settings**: `use_lora=True`, `lora_rank=48`, `lora_dropout=0.0`
 - **Training**: `batch_size=4`, `learning_rate=0.0005`, `max_steps=10000`
 - **DPO**: `dpo_beta=0.1` (controls the strength of preference optimization)
 
 ## Command Line Options
 
+### Training Parameters
 - `--device`: GPU device for policy model (default: cuda:2)
 - `--ref-device`: GPU device for reference model (default: cuda:0)  
 - `--max-steps`: Maximum training steps (default: 10000)
 - `--batch-size`: Training batch size (default: 4)
 - `--learning-rate`: Learning rate (default: 0.0005)
 - `--dpo-beta`: DPO beta parameter (default: 0.1)
+- `--stream-length`: Stream length for trajectory processing (default: 5)
 - `--use-wandb`: Enable Weights & Biases logging
+- `--wandb-project`: Weights & Biases project name (default: openvla_CoA_DPO)
+- `--wandb-entity`: Weights & Biases entity name (default: 15652388600)
 - `--run-id-note`: Additional note for experiment tracking
+
+### Path Configuration (All Optional with Smart Defaults)
+- `--root-dir`: Root directory (default: /mnt/sda/home/zijianwang)
+- `--pretrained-checkpoint`: Path to pretrained checkpoint (auto-generated from root-dir if empty)
+- `--lora-path`: Path to LoRA adapter (auto-generated from root-dir if empty)
+- `--base-vla-path`: Path to base VLA model (auto-generated from root-dir if empty)
+- `--winner-trajectory-path`: Path to winner trajectory data (auto-generated from root-dir if empty)
+- `--adapter-tmp-dir`: Directory for saving adapters (auto-generated from root-dir if empty)
+- `--run-root-dir`: Root directory for run outputs (auto-generated from root-dir if empty)
 
 ## Key Features
 
