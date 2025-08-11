@@ -87,7 +87,7 @@ def get_vla_via_lora(cfg):
     AutoModelForVision2Seq.register(OpenVLAConfig, OpenVLAForActionPrediction)
 
     lora_config = PeftConfig.from_pretrained(cfg.lora_path)
-    base_vla_path = lora_config.base_model_name_or_path
+    base_vla_path = cfg.base_vla_path
 
     base_vla = AutoModelForVision2Seq.from_pretrained(
         base_vla_path,
@@ -104,7 +104,7 @@ def get_vla_via_lora(cfg):
     if not cfg.load_in_8bit and not cfg.load_in_4bit:
         base_vla = base_vla.to(cfg.device)
 
-    vla = PeftModel.from_pretrained(base_vla, cfg.lora_path, is_trainable=True)
+    vla = PeftModel.from_pretrained(base_vla, cfg.lora_path, is_trainable=True, torch_device = cfg.device)
     # Load dataset stats used during finetuning (for action un-normalization).
     dataset_statistics_path = os.path.join(base_vla_path, "dataset_statistics.json")
     if os.path.isfile(dataset_statistics_path):

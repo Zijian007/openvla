@@ -27,7 +27,7 @@ OPENVLA_V01_SYSTEM_PROMPT = (
 from torch.utils.data import Dataset
 
 class TrajectoryDataset(Dataset):
-    def __init__(self, cfg, winner_folder_path, task_suite_name, processor, device, model):
+    def __init__(self, cfg, winner_folder_path, task_suite_name, processor, device, model, stream_length = 10):
         self.winner_folder_path = winner_folder_path
         self.task_suite_name = task_suite_name
         self.data_path = os.path.join(self.winner_folder_path, self.task_suite_name)
@@ -35,6 +35,7 @@ class TrajectoryDataset(Dataset):
         self.processor = processor
         self.device = device
         self.cfg = cfg
+        self.stream_length = stream_length
 
         # Get list of all trajectory folders (only success trajectories)
         self.trajectory_folders = []
@@ -44,10 +45,10 @@ class TrajectoryDataset(Dataset):
                 self.trajectory_folders.append(folder_name)
         print(f"Found {len(self.trajectory_folders)} success trajectories")
 
-    def get_winner_completion_ids(self, traj):
+    def get_winner_completion_ids(self, traj, start_idx):
         action_chain = []
         action_sperate_token_id = 32001 # <A>
-        for action in traj["action"]:
+        for action in traj["action"][start_idx:start_idx+self.stream_length]:
             action_chain.extend(action.tolist())  # Add the action tokens
             action_chain.append(action_sperate_token_id)  # Add separator token after each action
             # Ensure action_chain length is a multiple of 8
@@ -56,9 +57,8 @@ class TrajectoryDataset(Dataset):
         winner_completion_ids = action_chain
         return winner_completion_ids
 
-    def get_loser_completion_ids(self, traj, num_act_units = 10):
+    def get_loser_completion_ids(self, initial_state):
         ACTION_DIM = 7
-        initial_state:dict = self.get_initial_state(traj, self.cfg.pretrained_checkpoint, self.processor, self.device)
         # loser_completion_ids = self.model.get_CoA(**initial_state, unnorm_key=self.cfg.unnorm_key, num_act_units=self.cfg.num_act_units)
         input_ids = initial_state['input_ids']
 
@@ -68,7 +68,7 @@ class TrajectoryDataset(Dataset):
             )
 
         initial_state['input_ids'] = input_ids
-        max_new_tokens=(self.model.get_action_dim(self.cfg.unnorm_key)+1)*num_act_units
+        max_new_tokens=(self.model.get_action_dim(self.cfg.unnorm_key)+1)*self.stream_length
         generated_ids = self.model.generate(max_new_tokens = max_new_tokens, **initial_state, do_sample = True, top_k = 1)
         assert (generated_ids.shape[1] - input_ids.shape[1]) % (ACTION_DIM + 1) == 0, f"Action shape {generated_ids.shape} is not divisible by {ACTION_DIM + 1}"
         chain = generated_ids[:,input_ids.shape[1]:]
@@ -121,17 +121,17 @@ class TrajectoryDataset(Dataset):
                 trajectory["state"].append(state)
                 trajectory["action"].append(action)
         return trajectory
-    # trajectory is a dictionary containing:
-    # - "task_num": str, task number extracted from folder name
-    # - "episode_num": str, episode number extracted from folder name  
-    # - "result": str, either "success" or "failure"
-    # - "state": list, will contain observation dictionaries for each step
-    # - "action": list, will contain action_ids (tokenized actions) for each step
-
-
+        # trajectory is a dictionary containing:
+        # - "task_num": str, task number extracted from folder name
+        # - "episode_num": str, episode number extracted from folder name  
+        # - "result": str, either "success" or "failure"
+        # - "state": list, will contain observation dictionaries for each step
+        # - "action": list, will contain action_ids (tokenized actions) for each step
 
     def get_initial_state(self, traj, base_vla_name, processor, device, resize_size = 224, center_crop=True)->dict:
-        obs = traj["state"][0]
+
+        start_idx = random.randint(0, len(traj["state"]) - self.stream_length)
+        obs = traj["state"][start_idx]
         task_label = traj["task_description"]
         img = get_libero_image(obs, resize_size)
         image = Image.fromarray(img)
@@ -170,86 +170,20 @@ class TrajectoryDataset(Dataset):
 
         # Process inputs.
         inputs = processor(prompt, image).to(device, dtype=torch.bfloat16)
-        return inputs
+        return inputs, start_idx
     
     def __len__(self):
         return len(self.trajectory_folders)
     
     def __getitem__(self, idx) -> dict:
         trajectory = self.get_trajectory_data(idx)
-        winner_completion_ids = self.get_winner_completion_ids(trajectory)
-        loser_completion_ids = self.get_loser_completion_ids(trajectory)
-        initial_state:dict = self.get_initial_state(trajectory, self.cfg.pretrained_checkpoint, self.processor, self.device)
+        initial_state, start_idx = self.get_initial_state(trajectory, self.cfg.pretrained_checkpoint, self.processor, self.device)
+        winner_completion_ids = self.get_winner_completion_ids(trajectory, start_idx)
+        loser_completion_ids = self.get_loser_completion_ids(initial_state)
         # loser_completion_ids = self.model.get_CoA(**initial_state, unnorm_key=self.cfg.unnorm_key, num_act_units=self.cfg.num_act_units)
         input_ids = initial_state['input_ids']
-        return {"prompt_input_ids":input_ids, "chosen_input_ids": winner_completion_ids, "rejected_input_ids": loser_completion_ids}
-
-        # folder_name = self.trajectory_folders[idx]
-        
-        # # Parse folder name
-        # match = re.search(r"task_(\d+)_episode_(\d+)_(failure|success)", folder_name)
-        # if match:
-        #     task_num = match.group(1)
-        #     episode_num = match.group(2)
-        #     result = match.group(3)
-        # else:
-        #     raise ValueError(f"Invalid folder name: {folder_name}")
-
-        # task_description = get_task_description(self.task_suite_name, int(task_num))
-        
-        # # Load trajectory data
-        # trajectory_folder_path = os.path.join(self.data_path, folder_name)
-        # trajectory = {
-        #     "task_num": task_num, 
-        #     "episode_num": episode_num, 
-        #     "result": result,
-        #     "task_description": task_description,
-        #     "state": [], 
-        #     "action": []
-        # }
-
-        # # Read all pickle files in the trajectory folder
-        # pkl_files = [f for f in os.listdir(trajectory_folder_path) if f.endswith(".pkl")]
-        # # Sort pkl files by step number
-        # pkl_files.sort(key=lambda x: int(re.search(r'step_(\d+)\.pkl', x).group(1)))
-        # start_idx = random.randint(0, len(pkl_files) - 5)
-        # action_chain = []
-        # action_sperate_token_id = 32001 # <A>
-        # for i in range(start_idx, len(pkl_files)):
-        #     with open(os.path.join(trajectory_folder_path, pkl_files[i]), "rb") as f:
-        #         data = pickle.load(f)
-        #         state = data["obs"]
-        #         action = data["action_ids"]
-        #         trajectory["state"].append(state)
-        #         trajectory["action"].append(action)
-        #         action_chain.extend(action.tolist())  # Add the action tokens
-        #         action_chain.append(action_sperate_token_id)  # Add separator token after each action
-        # # Ensure action_chain length is a multiple of 8
-        # assert len(action_chain) % 8 == 0, f"Action chain length {len(action_chain)} is not a multiple of 8"
-        # action_chain = torch.tensor(action_chain).to(self.device)
-        # winner_completion_ids = action_chain
-
-        # initial_state:dict = self.get_initial_state(trajectory, self.cfg.pretrained_checkpoint, self.processor, self.device)
-        # # input_ids = torch.cat([initial_state['input_ids'][0], action_chain])
-
-        # input_ids = initial_state['input_ids'][0]
-        # pixel_values = initial_state['pixel_values']
-        # attention_mask = torch.cat([initial_state['attention_mask'][0], torch.ones_like(action_chain)])
-        # multimodal_embeddings, multimodal_attention_mask = prepare_multimodal_inputs(self.model, input_ids, attention_mask, pixel_values)
-        # loser_completion_ids = get_loser_completion_ids(self.model, initial_state)
-
-        # return {"input_embeddings": multimodal_embeddings,  "winner_completion_ids": winner_completion_ids, "loser_completion_ids": loser_completion_ids}
-        
-        # for file in pkl_files:
-        #     with open(os.path.join(trajectory_folder_path, file), "rb") as f:
-        #         data = pickle.load(f)
-        #         state = data["obs"]
-        #         action = data["action_ids"]
-        #         trajectory["state"].append(state)
-        #         trajectory["action"].append(action)
-
-        # winner_trajectory = traj_preprocess(trajectory, 0, self.model, task_description, self.processor, self.model.device)
-        # return trajectory       
+        pixel_values = initial_state['pixel_values']
+        return {"prompt_input_ids":input_ids[0], "pixel_values": pixel_values[0], "chosen_input_ids": winner_completion_ids, "rejected_input_ids": loser_completion_ids[0]}
 
 
 
@@ -368,3 +302,73 @@ def prepare_multimodal_inputs(
     #     multimodal_labels = torch.cat([labels[:, :1], projected_patch_labels, labels[:, 1:]], dim=1)
     
     return multimodal_embeddings, multimodal_attention_mask
+
+
+
+
+        # folder_name = self.trajectory_folders[idx]
+        
+        # # Parse folder name
+        # match = re.search(r"task_(\d+)_episode_(\d+)_(failure|success)", folder_name)
+        # if match:
+        #     task_num = match.group(1)
+        #     episode_num = match.group(2)
+        #     result = match.group(3)
+        # else:
+        #     raise ValueError(f"Invalid folder name: {folder_name}")
+
+        # task_description = get_task_description(self.task_suite_name, int(task_num))
+        
+        # # Load trajectory data
+        # trajectory_folder_path = os.path.join(self.data_path, folder_name)
+        # trajectory = {
+        #     "task_num": task_num, 
+        #     "episode_num": episode_num, 
+        #     "result": result,
+        #     "task_description": task_description,
+        #     "state": [], 
+        #     "action": []
+        # }
+
+        # # Read all pickle files in the trajectory folder
+        # pkl_files = [f for f in os.listdir(trajectory_folder_path) if f.endswith(".pkl")]
+        # # Sort pkl files by step number
+        # pkl_files.sort(key=lambda x: int(re.search(r'step_(\d+)\.pkl', x).group(1)))
+        # start_idx = random.randint(0, len(pkl_files) - 5)
+        # action_chain = []
+        # action_sperate_token_id = 32001 # <A>
+        # for i in range(start_idx, len(pkl_files)):
+        #     with open(os.path.join(trajectory_folder_path, pkl_files[i]), "rb") as f:
+        #         data = pickle.load(f)
+        #         state = data["obs"]
+        #         action = data["action_ids"]
+        #         trajectory["state"].append(state)
+        #         trajectory["action"].append(action)
+        #         action_chain.extend(action.tolist())  # Add the action tokens
+        #         action_chain.append(action_sperate_token_id)  # Add separator token after each action
+        # # Ensure action_chain length is a multiple of 8
+        # assert len(action_chain) % 8 == 0, f"Action chain length {len(action_chain)} is not a multiple of 8"
+        # action_chain = torch.tensor(action_chain).to(self.device)
+        # winner_completion_ids = action_chain
+
+        # initial_state:dict = self.get_initial_state(trajectory, self.cfg.pretrained_checkpoint, self.processor, self.device)
+        # # input_ids = torch.cat([initial_state['input_ids'][0], action_chain])
+
+        # input_ids = initial_state['input_ids'][0]
+        # pixel_values = initial_state['pixel_values']
+        # attention_mask = torch.cat([initial_state['attention_mask'][0], torch.ones_like(action_chain)])
+        # multimodal_embeddings, multimodal_attention_mask = prepare_multimodal_inputs(self.model, input_ids, attention_mask, pixel_values)
+        # loser_completion_ids = get_loser_completion_ids(self.model, initial_state)
+
+        # return {"input_embeddings": multimodal_embeddings,  "winner_completion_ids": winner_completion_ids, "loser_completion_ids": loser_completion_ids}
+        
+        # for file in pkl_files:
+        #     with open(os.path.join(trajectory_folder_path, file), "rb") as f:
+        #         data = pickle.load(f)
+        #         state = data["obs"]
+        #         action = data["action_ids"]
+        #         trajectory["state"].append(state)
+        #         trajectory["action"].append(action)
+
+        # winner_trajectory = traj_preprocess(trajectory, 0, self.model, task_description, self.processor, self.model.device)
+        # return trajectory       
