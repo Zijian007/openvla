@@ -27,7 +27,7 @@ OPENVLA_V01_SYSTEM_PROMPT = (
 from torch.utils.data import Dataset
 
 class TrajectoryDataset(Dataset):
-    def __init__(self, cfg, winner_folder_path, task_suite_name, processor, device, model, stream_length = 10):
+    def __init__(self, cfg, winner_folder_path, task_suite_name, processor, device, model, img_size = 224, stream_length = 10):
         self.winner_folder_path = winner_folder_path
         self.task_suite_name = task_suite_name
         self.data_path = os.path.join(self.winner_folder_path, self.task_suite_name)
@@ -36,6 +36,7 @@ class TrajectoryDataset(Dataset):
         self.device = device
         self.cfg = cfg
         self.stream_length = stream_length
+        self.img_size = img_size
 
         # Get list of all trajectory folders (only success trajectories)
         self.trajectory_folders = []
@@ -128,12 +129,12 @@ class TrajectoryDataset(Dataset):
         # - "state": list, will contain observation dictionaries for each step
         # - "action": list, will contain action_ids (tokenized actions) for each step
 
-    def get_initial_state(self, traj, base_vla_name, processor, device, resize_size = 224, center_crop=True)->dict:
-
+    def get_initial_state(self, traj, base_vla_name, processor, device, center_crop=True)->tuple[dict, int]:
+        # 返回的inputs是processor处理后的结果, 包括input_ids, attention_mask, pixel_values
         start_idx = random.randint(0, len(traj["state"]) - self.stream_length)
         obs = traj["state"][start_idx]
         task_label = traj["task_description"]
-        img = get_libero_image(obs, resize_size)
+        img = get_libero_image(obs, self.img_size)
         image = Image.fromarray(img)
         image = image.convert("RGB")
         # (If trained with image augmentations) Center crop image and then resize back up to original size.
