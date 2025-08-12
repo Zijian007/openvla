@@ -4,6 +4,7 @@ DPO training utilities and loss computation functions.
 
 import os
 import datetime
+import itertools
 from collections import deque
 from typing import Tuple
 
@@ -144,7 +145,15 @@ def train_dpo(model, ref_model, train_dataloader, cfg, if_not_demo=False):
     with tqdm(total=cfg.max_steps, leave=False) as progress:
         model.train()
         
-        for batch_idx, batch in enumerate(train_dataloader):
+        # 创建无限迭代器，自动循环数据集
+        def infinite_dataloader(dataloader):
+            while True:
+                for batch in dataloader:
+                    yield batch
+        
+        infinite_loader = infinite_dataloader(train_dataloader)
+        
+        for batch_idx, batch in enumerate(infinite_loader):
             # Check if we've reached max steps
             gradient_step_idx = batch_idx // cfg.grad_accumulation_steps
             if gradient_step_idx >= cfg.max_steps:

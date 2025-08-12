@@ -27,7 +27,7 @@ OPENVLA_V01_SYSTEM_PROMPT = (
 from torch.utils.data import Dataset
 
 class TrajectoryDataset(Dataset):
-    def __init__(self, cfg, winner_folder_path, task_suite_name, processor, device, model, img_size = 224, stream_length = 10):
+    def __init__(self, cfg, winner_folder_path, task_suite_name, processor, device, model, img_size = 224, stream_length = 10, task_num = None):
         self.winner_folder_path = winner_folder_path
         self.task_suite_name = task_suite_name
         self.data_path = os.path.join(self.winner_folder_path, self.task_suite_name)
@@ -37,14 +37,21 @@ class TrajectoryDataset(Dataset):
         self.cfg = cfg
         self.stream_length = stream_length
         self.img_size = img_size
+        self.task_num = task_num
 
         # Get list of all trajectory folders (only success trajectories)
         self.trajectory_folders = []
+        self.task_trajectories = {}  # Dictionary to store trajectories by task number
         for folder_name in os.listdir(self.data_path):
             match = re.search(r"task_(\d+)_episode_(\d+)_(failure|success)", folder_name)
             if match and match.group(3) == "success":
+                task_num = match.group(1)
+                if task_num not in self.task_trajectories:
+                    self.task_trajectories[task_num] = []
+                self.task_trajectories[task_num].append(folder_name)
                 self.trajectory_folders.append(folder_name)
         print(f"Found {len(self.trajectory_folders)} success trajectories")
+        print(f"Task distribution: {[(task, len(folders)) for task, folders in self.task_trajectories.items()]}")
 
     def get_winner_completion_ids(self, traj, start_idx):
         action_chain = []
@@ -86,7 +93,10 @@ class TrajectoryDataset(Dataset):
         pass
 
     def get_trajectory_data(self, idx):
-        folder_name = self.trajectory_folders[idx]
+        if self.task_num is not None:
+            folder_name = self.task_trajectories[str(self.task_num)][idx]
+        else:
+            folder_name = self.trajectory_folders[idx]
         
         # Parse folder name
         match = re.search(r"task_(\d+)_episode_(\d+)_(failure|success)", folder_name)
@@ -176,7 +186,10 @@ class TrajectoryDataset(Dataset):
         return inputs, start_idx
     
     def __len__(self):
-        return len(self.trajectory_folders)
+        if self.task_num is not None:
+            return len(self.task_trajectories[self.task_num])
+        else:
+            return len(self.trajectory_folders)
     
     def __getitem__(self, idx) -> dict:
         trajectory = self.get_trajectory_data(idx)

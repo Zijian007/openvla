@@ -20,6 +20,7 @@ python vla-scripts/DPO/dpo_main.py \
   --max-steps 10000 \
   --batch-size 2 \
   --stream-length 20 \
+  --task-num 1 \
   --root-dir "${ROOT_DIR}" \
   --pretrained-checkpoint "${PRETRAINED_CHECKPOINT}" \
   --lora-path "${LORA_PATH}" \

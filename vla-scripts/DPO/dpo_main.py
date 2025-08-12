@@ -90,6 +90,7 @@ def main():
     parser.add_argument("--lora-path", type=str, default="", help="Path to LoRA adapter (uses default if empty)")
     parser.add_argument("--base-vla-path", type=str, default="", help="Path to base VLA model (uses default if empty)")
     parser.add_argument("--winner-trajectory-path", type=str, default="", help="Path to winner trajectory data (uses default if empty)")
+    parser.add_argument("--task-num", type=int, default=None, help="Task number for training (uses default if empty)")
     parser.add_argument("--adapter-tmp-dir", type=str, default="", help="Directory for saving adapters (uses default if empty)")
     parser.add_argument("--run-root-dir", type=str, default="", help="Root directory for run outputs (uses default if empty)")
     
@@ -117,7 +118,8 @@ def main():
         base_vla_path=args.base_vla_path,
         winner_trajectory_path=args.winner_trajectory_path,
         adapter_tmp_dir=args.adapter_tmp_dir,
-        run_root_dir=args.run_root_dir
+        run_root_dir=args.run_root_dir,
+        task_num=args.task_num
     )
     
     # Setup policy model (with LoRA)
