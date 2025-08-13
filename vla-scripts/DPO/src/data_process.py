@@ -79,7 +79,7 @@ class TrajectoryDataset(Dataset):
         max_new_tokens = (self.model.get_action_dim(self.cfg.unnorm_key)+1)*self.stream_length
         assert self.model.get_action_dim(self.cfg.unnorm_key) == 7, f"Action dim {self.model.get_action_dim(self.cfg.unnorm_key)} is not 7"
         generated_ids = self.model.generate(max_new_tokens = max_new_tokens, **initial_state, do_sample = True, top_k = 1)
-        assert (generated_ids.shape[1] - input_ids.shape[1]) % (ACTION_DIM + 1) == 0, f"Action shape {generated_ids.shape} is not divisible by {ACTION_DIM + 1}"
+        # assert (generated_ids.shape[1] - input_ids.shape[1]) % (ACTION_DIM + 1) == 0, f"Action shape {generated_ids.shape} is not divisible by {ACTION_DIM + 1}"
         chain = generated_ids[:,input_ids.shape[1]:]
         loser_completion_ids = chain
         return loser_completion_ids

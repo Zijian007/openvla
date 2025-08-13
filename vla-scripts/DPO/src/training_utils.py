@@ -96,7 +96,7 @@ def train_dpo(model, ref_model, train_dataloader, cfg, if_not_demo=False):
 
     # Configure Unique Experiment ID & Log Directory
     exp_id = (
-        f"{cfg.vla_path.split('/')[-1]}+{cfg.dataset_name}"
+        f"{cfg.vla_path.split('/')[-1]}+{cfg.dataset_name}+task{cfg.task_num}"
         f"+b{cfg.batch_size * cfg.grad_accumulation_steps}"
         f"+lr-{cfg.learning_rate}"
     )
