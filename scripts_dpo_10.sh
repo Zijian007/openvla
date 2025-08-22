@@ -1,7 +1,7 @@
 export HF_HUB_CACHE=/mnt/sda/home/zijianwang/HF_CACHE
 
 # Define path variables
-ROOT_DIR="/mnt/sda/home/zijianwang"
+ROOT_DIR="/hdd/zijianwang"
 PRETRAINED_CHECKPOINT="${ROOT_DIR}/openvla/FT_res/openvla-7b-finetuned-libero-10+libero_10_no_noops+b4+lr-0.0005+lora-r48+dropout-0.0--image_aug--2025-07-18_19-26-25"
 LORA_PATH="${ROOT_DIR}/openvla/adapter_tmp_dir/openvla-7b-finetuned-libero-10+libero_10_no_noops+b4+lr-0.0005+lora-r48+dropout-0.0--image_aug--2025-07-18_19-26-25"
 BASE_VLA_PATH="${ROOT_DIR}/HF_CACHE/openvla-7b-finetuned-libero-10"
