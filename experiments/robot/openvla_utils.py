@@ -304,7 +304,7 @@ def get_vla_CoA(vla, processor, base_vla_name, obs, task_label, unnorm_key, cent
     inputs = processor(prompt, image).to(vla.device, dtype=torch.bfloat16)
 
     # Get action.
-    action = vla.get_CoA(**inputs, unnorm_key=unnorm_key, num_act_units=num_act_units)
+    action = vla.get_CoA(**inputs, unnorm_key = unnorm_key, num_act_units = num_act_units)
     return action
 
 

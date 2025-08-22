@@ -27,8 +27,8 @@ class GenerateConfig:
     # Model-specific parameters
     #################################################################################################################
     model_family: str = "openvla"                    # Model family
-
     dataset_name: str = "libero_10_no_noops"
+    task_num: Optional[int] = None
 
     pretrained_checkpoint: Union[str, Path] = ""
     lora_path: str = ""
