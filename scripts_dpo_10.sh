@@ -12,6 +12,8 @@ export HF_HUB_CACHE=/mnt/sda/home/zijianwang/HF_CACHE
 
 # This is a new new new text message in lab2
 
+# This is a new new new new text message in lab2
+
 # Define path variables
 ROOT_DIR="/hdd/zijianwang"
 PRETRAINED_CHECKPOINT="${ROOT_DIR}/openvla/FT_res/openvla-7b-finetuned-libero-10+libero_10_no_noops+b4+lr-0.0005+lora-r48+dropout-0.0--image_aug--2025-07-18_19-26-25"
