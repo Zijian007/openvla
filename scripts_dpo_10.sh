@@ -10,7 +10,7 @@ export HF_HUB_CACHE=/mnt/sda/home/zijianwang/HF_CACHE
 
 # This is a new new text message in lab2
 
-
+# This is a new new new text message in lab2
 
 # Define path variables
 ROOT_DIR="/hdd/zijianwang"
