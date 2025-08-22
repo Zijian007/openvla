@@ -27,6 +27,15 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 import torch
 from torch.utils.data import DataLoader
 from trl.trainer.dpo_trainer import DataCollatorForPreference
+import numpy as np
+from tqdm import tqdm
+from experiments.robot.libero.libero_utils import (
+    get_libero_dummy_action,
+    get_libero_env,
+    get_libero_image,
+    quat2axisangle,
+    save_rollout_video_CoA,
+)
 
 # Local imports
 from src.config import GenerateConfig
@@ -38,7 +47,7 @@ from src.data_process import TrajectoryDataset
 from experiments.robot.robot_utils import get_model
 
 
-def setup_data_loader(cfg, processor, model, resize_size, stream_length):
+def setup_data_loader(cfg, processor, model, env, resize_size):
     """Setup the training data loader."""
     print("[*] Setting up dataset and data loader...")
     
@@ -48,10 +57,12 @@ def setup_data_loader(cfg, processor, model, resize_size, stream_length):
         cfg.winner_trajectory_path, 
         cfg.task_suite_name, 
         processor, 
+        env, 
         device=cfg.device, 
         model=model, 
         img_size=resize_size,
-        stream_length=cfg.stream_length
+        stream_length=cfg.stream_length,
+        task_num=cfg.task_num
     )
     
     # Create data collator
@@ -98,6 +109,19 @@ def main():
 
     print("[*] Starting OpenVLA DPO Training")
     
+    # Check GPU availability and display information
+    print(f"\nGPU Information:")
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"GPU count: {torch.cuda.device_count()}")
+        for i in range(torch.cuda.device_count()):
+            print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+            print(f"    Memory: {torch.cuda.get_device_properties(i).total_memory / 1e9:.1f} GB")
+    
+    print("\n" + "="*50)
+    print("Starting OpenVLA DPO Training")
+    print("="*50)
+    
     # Initialize configuration for policy model
     print("[*] Initializing configuration...")
     model_cfg = GenerateConfig(
@@ -122,16 +146,56 @@ def main():
         task_num=args.task_num
     )
     
+    # Display configuration summary
+    print("\n" + "="*50)
+    print("CONFIGURATION SUMMARY")
+    print("="*50)
+    print(f"Policy Device: {model_cfg.device}")
+    print(f"Reference Device: {args.ref_device}")
+    print(f"Max Steps: {model_cfg.max_steps}")
+    print(f"Batch Size: {model_cfg.batch_size}")
+    print(f"Learning Rate: {model_cfg.learning_rate}")
+    print(f"DPO Beta: {model_cfg.dpo_beta}")
+    print(f"Stream Length: {model_cfg.stream_length}")
+    print(f"Use WandB: {model_cfg.use_wandb}")
+    print(f"Task Number: {model_cfg.task_num if model_cfg.task_num else 'All tasks'}")
+    print("\nPath Configuration:")
+    print(f"Root Dir: {model_cfg.root_dir}")
+    print(f"Pretrained Checkpoint: {model_cfg.pretrained_checkpoint}")
+    print(f"LoRA Path: {model_cfg.lora_path}")
+    print(f"Winner Trajectory Path: {model_cfg.winner_trajectory_path}")
+    print(f"Adapter Tmp Dir: {model_cfg.adapter_tmp_dir}")
+    print(f"Run Root Dir: {model_cfg.run_root_dir}")
+    print("="*50)
+    
     # Setup policy model (with LoRA)
     print("[*] Loading policy model (with LoRA)...")
+    print(f"Target device: {model_cfg.device}")
     model = setup_vla_model_with_lora(model_cfg)
+    print(f"✓ Policy model loaded successfully")
+    print(f"Model device: {next(model.parameters()).device}")
+    print(f"Model dtype: {next(model.parameters()).dtype}")
+    
+    # Count parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total parameters: {total_params:,}")
+    print(f"Trainable parameters: {trainable_params:,}")
+    print(f"Trainable ratio: {100 * trainable_params / total_params:.2f}%")
     
     # Setup logging and environment
     print("[*] Setting up logging and environment...")
     processor, log_file, task_suite, num_tasks_in_suite, resize_size = setup_logging_and_environment(model_cfg, model)
     
+    # Setup task and environment
+    print("[*] Setting up task and environment...")
+    task = task_suite.get_task(model_cfg.task_num)
+    env, task_description = get_libero_env(task, model_cfg.model_family, resolution=256)
+    print(f"Task description: {task_description}")
+    
     # Initialize configuration for reference model
     print("[*] Loading reference model...")
+    print(f"Target device: {args.ref_device}")
     ref_config = GenerateConfig(
         root_dir=args.root_dir,
         device=args.ref_device,
@@ -144,26 +208,41 @@ def main():
     )
     # ref_model = get_model(ref_config)
     ref_model = setup_vla_model_with_lora(ref_config)
+    print(f"✓ Reference model loaded successfully")
+    print(f"Model device: {next(ref_model.parameters()).device}")
+    print(f"Model dtype: {next(ref_model.parameters()).dtype}")
+    
+    # Set reference model to eval mode and freeze parameters
+    ref_model.eval()
+    for param in ref_model.parameters():
+        param.requires_grad = False
+    print("✓ Reference model set to eval mode and frozen")
     
     # Setup data loader
-    train_dataloader = setup_data_loader(model_cfg, processor, model, resize_size, model_cfg.stream_length)
+    train_dataloader = setup_data_loader(model_cfg, processor, model, env, resize_size)
     
-    # Verify setup with a test batch
-    print("[*] Verifying data loader setup...")
-    test_batch = next(iter(train_dataloader))
-    print(f"Batch keys: {test_batch.keys()}")
-    print(f"Chosen input shape: {test_batch['chosen_input_ids'].shape}")
-    print(f"Pixel values shape: {test_batch['pixel_values'].shape}")
+    # # Verify setup with a test batch
+    # print("[*] Verifying data loader setup...")
+    # test_batch = next(iter(train_dataloader))
+    # print(f"Batch keys: {test_batch.keys()}")
+    # print(f"Chosen input shape: {test_batch['chosen_input_ids'].shape}")
+    # print(f"Pixel values shape: {test_batch['pixel_values'].shape}")
     
-    # Test forward pass
-    # print("[*] Testing forward pass...")
-    # with torch.no_grad():
-    #     pred_test = model.forward(
-    #         input_ids=test_batch["prompt_input_ids"].to(model_cfg.device), 
-    #         attention_mask=test_batch["chosen_attention_mask"].to(model_cfg.device), 
-    #         pixel_values=test_batch["pixel_values"].to(model_cfg.device)
-    #     )
-    # print(f"Model output keys: {pred_test.keys()}")
+    # Model loading summary
+    print("\n" + "="*50)
+    print("MODEL LOADING SUMMARY")
+    print("="*50)
+    print(f"Policy Model Device: {next(model.parameters()).device}")
+    print(f"Reference Model Device: {next(ref_model.parameters()).device}")
+    print(f"Policy Model Trainable: {sum(p.requires_grad for p in model.parameters())} params")
+    print(f"Reference Model Trainable: {sum(p.requires_grad for p in ref_model.parameters())} params")
+    print("Models loaded successfully!")
+    print("="*50)
+    
+    # Optional: Clear cache to free up memory
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        print("GPU cache cleared.")
     
     # Start DPO training
     print("[*] Starting DPO training...")

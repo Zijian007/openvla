@@ -15,10 +15,11 @@ WANDB_ENTITY="15652388600"
 
 # libero_spatial_no_noops, libero_object_no_noops, libero_goal_no_noops: lora24, libero_10_no_noops
 python vla-scripts/DPO/dpo_main.py \
-  --device cuda:3 \
+  --device cuda:1 \
   --ref-device cuda:0 \
-  --max-steps 10000 \
-  --batch-size 2 \
+  --max-steps 500 \
+  --batch-size 1 \
+  --dpo-beta 0.5 \
   --stream-length 20 \
   --task-num 1 \
   --root-dir "${ROOT_DIR}" \
