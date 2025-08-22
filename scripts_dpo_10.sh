@@ -15,6 +15,14 @@ export HF_HUB_CACHE=/mnt/sda/home/zijianwang/HF_CACHE
 # This is a new new new new text message in lab0
 
 # This is a 5*new text message in lab0
+# This is a 6*new text message in lab0
+
+# This is a 7*new text message in lab0
+
+# This is a 8*new text message in lab0
+
+
+
 
 
 
