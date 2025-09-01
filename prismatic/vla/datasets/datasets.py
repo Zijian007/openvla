@@ -34,6 +34,7 @@ class RLDSBatchTransform:
     image_transform: ImageTransform
     prompt_builder_fn: Type[PromptBuilder]
     predict_stop_token: bool = True
+    human_prompt_template: str = "What action should the robot take to {lang}?"
 
     def __call__(self, rlds_batch: Dict[str, Any]) -> Dict[str, Any]:
         """Converts a RLDS batch to the format expected by the OpenVLA collator/models."""
@@ -44,7 +45,7 @@ class RLDSBatchTransform:
         # Construct Chat-based Prompt =>> Input is default query + language instruction, output are the action tokens
         prompt_builder = self.prompt_builder_fn("openvla")
         conversation = [
-            {"from": "human", "value": f"What action should the robot take to {lang}?"},
+            {"from": "human", "value": self.human_prompt_template.format(lang=lang)},
             {"from": "gpt", "value": self.action_tokenizer(action)},
         ]
         for turn in conversation:
@@ -64,7 +65,7 @@ class RLDSBatchTransform:
         if not self.predict_stop_token:
             labels[-1] = IGNORE_INDEX
 
-        return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels, dataset_name=dataset_name)
+        return dict(pixel_values=pixel_values, input_ids=input_ids, labels=labels, dataset_name=dataset_name, img=np.array(img), action=self.action_tokenizer(action))
 
 
 class RLDSDataset(IterableDataset):
@@ -183,7 +184,46 @@ class EpisodicRLDSDataset(RLDSDataset):
             ]
             out = reorganize_episode_to_CoA(out, if_random_start=self.if_random_start)
             yield out
+            
+    # def get_all_samples(self):
+    #     import re
+    #     """Iterate through the dataset once and collect all samples."""
+    #     samples = []
+    #     total_iterations = self.dataset_length
+    #     current_iteration = 0
+        
+    #     print(f"Starting to collect all samples. Total iterations: {total_iterations}")
+        
+    #     for rlds_batch in self.dataset.as_numpy_iterator():
+    #         current_iteration += 1
+    #         print(f"Current iteration: {current_iteration}/{total_iterations}")
+            
+    #         out = [
+    #             self.batch_transform(tree_map(lambda x: x[i], rlds_batch))  # noqa: B023
+    #             for i in range(rlds_batch["action"].shape[0])
+    #         ]
+    #         out = reorganize_episode_to_CoA(out, if_random_start=self.if_random_start)
+    #         text = self.batch_transform.base_tokenizer.decode(out["text"])
+    #         # print(text)
+    #         # 使用正则表达式提取In后和Out前的内容
+    #         pattern = r'In:\s*(.*?)\s*Out:'
+    #         match = re.search(pattern, text, re.DOTALL)
+    #         if match:
+    #             extracted_text = match.group(1).strip()
+    #             # 移除"What action should the robot take to"前缀和末尾的问号
+    #             if extracted_text.startswith("What action should the robot take to "):
+    #                 extracted_text = extracted_text[len("What action should the robot take to "):]
+    #             if extracted_text.endswith("?"):
+    #                 extracted_text = extracted_text[:-1]
+    #             out["task_description"] = extracted_text
+    #             samples.append(out)
+    #         if current_iteration > 1000:
+    #             break
+        
+    #     print(f"Completed collecting all samples. Total collected: {len(samples)}")
+    #     return samples
 
+        
 
 
 import random
@@ -216,7 +256,8 @@ def reorganize_episode_to_CoA(episode, if_random_start=True):
         action = episode[i]['input_ids'][-8:-1] # a tensor of shape (7,), like tensor([31867, 31884, 31872, 31891, 31902, 31928, 31744])
         action_chain.extend(action.tolist())  # Add the action tokens
         action_chain.append(action_sperate_token_id)  # Add separator token after each action
-        replay_images.append(np.array(episode[i]['pixel_values'][3:6]))
+        # replay_images.append(np.array(episode[i]['pixel_values'][3:6]))
+        replay_images.append(episode[i]['img'])
     # Convert to tensor
     action_chain = torch.tensor(action_chain)
     
@@ -229,7 +270,8 @@ def reorganize_episode_to_CoA(episode, if_random_start=True):
         'dataset_name': dataset_name,
         'length': length,   
         'replay_images': replay_images,
-        "text": initial_text
+        "text": initial_text,
+        "action": action_chain
     }
 
 

@@ -40,14 +40,14 @@ from experiments.robot.libero.libero_utils import (
 # Local imports
 from src.config import GenerateConfig
 from src.model_utils import setup_vla_model_with_lora, setup_model_and_config, setup_logging_and_environment
-from src.training_utils import train_dpo
+from src.training_utils_prog import train_dpo
 from src.data_process import TrajectoryDataset
 
 # External imports  
 from experiments.robot.robot_utils import get_model
 
 
-def setup_data_loader(cfg, processor, model, env, resize_size):
+def setup_data_loader(cfg, processor, model, env, task_suite, resize_size, human_prompt_template = "What action should the robot take to {lang}?"):
     """Setup the training data loader."""
     print("[*] Setting up dataset and data loader...")
     
@@ -58,11 +58,14 @@ def setup_data_loader(cfg, processor, model, env, resize_size):
         cfg.task_suite_name, 
         processor, 
         env, 
+        task_suite,
         device=cfg.device, 
         model=model, 
         img_size=resize_size,
         stream_length=cfg.stream_length,
-        task_num=cfg.task_num
+        task_num=cfg.task_num,
+        if_fixed_stream_length = True,
+        human_prompt_template=human_prompt_template
     )
     
     # Create data collator
@@ -83,11 +86,11 @@ def setup_data_loader(cfg, processor, model, env, resize_size):
 def main():
     """Main function to run DPO training."""
     parser = argparse.ArgumentParser(description="DPO Training for OpenVLA")
-    parser.add_argument("--device", type=str, default="cuda:2", help="Device for policy model")
+    parser.add_argument("--device", type=str, default="cuda:1", help="Device for policy model")
     parser.add_argument("--ref-device", type=str, default="cuda:0", help="Device for reference model")
     parser.add_argument("--max-steps", type=int, default=10000, help="Maximum training steps")
     parser.add_argument("--batch-size", type=int, default=4, help="Training batch size")
-    parser.add_argument("--learning-rate", type=float, default=0.0005, help="Learning rate")
+    parser.add_argument("--learning-rate", type=float, default=0.0001, help="Learning rate")
     parser.add_argument("--dpo-beta", type=float, default=0.1, help="DPO beta parameter")
     parser.add_argument("--stream-length", type=int, default=5, help="Stream length for trajectory processing")
     parser.add_argument("--use-wandb", action="store_true", help="Enable Weights & Biases logging")
@@ -219,7 +222,10 @@ def main():
     print("✓ Reference model set to eval mode and frozen")
     
     # Setup data loader
-    train_dataloader = setup_data_loader(model_cfg, processor, model, env, resize_size)
+
+    human_prompt_template = "What sequence of actions should the robot take to {lang}?"
+
+    train_dataloader = setup_data_loader(model_cfg, processor, model, env, task_suite, resize_size, human_prompt_template)
     
     # # Verify setup with a test batch
     # print("[*] Verifying data loader setup...")

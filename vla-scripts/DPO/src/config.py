@@ -52,6 +52,32 @@ class GenerateConfig:
     max_steps: int = 10000
     dpo_beta: float = 0.1
     stream_length: int = 5
+    
+    # DPO loss weights
+    dpo_weight: float = 1.0                          # Weight for DPO loss
+    sft_weight: float = 0.1                          # Weight for SFT loss
+    
+    #################################################################################################################
+    # Learning Rate Scheduler parameters
+    #################################################################################################################
+    lr_scheduler_type: str = "linear"                  # Options: "cosine", "linear", "exponential", "step", "plateau", "none"
+    
+    # Warmup parameters (for cosine and linear schedulers)
+    lr_warmup_steps: int = 0                         # Number of warmup steps (0 = no warmup)
+    
+    # Cosine scheduler parameters
+    lr_cosine_min_ratio: float = 0.1                 # Minimum LR ratio for cosine scheduler (final_lr = initial_lr * min_ratio)
+    
+    # Exponential scheduler parameters  
+    lr_exponential_gamma: float = 0.95               # Decay rate for exponential scheduler
+    
+    # Step scheduler parameters
+    lr_step_size: int = 100                          # Step size for step scheduler
+    lr_step_gamma: float = 0.5                       # Decay factor for step scheduler
+    
+    # Plateau scheduler parameters
+    lr_plateau_patience: int = 10                    # Patience for plateau scheduler
+    lr_plateau_factor: float = 0.5                   # Decay factor for plateau scheduler
     #################################################################################################################
     # LIBERO environment-specific parameters
     #################################################################################################################
@@ -102,5 +128,5 @@ class GenerateConfig:
         if not self.adapter_tmp_dir:
             self.adapter_tmp_dir = os.path.join(self.root_dir, "openvla/DPO_adapter_tmp_dir")
             
-        if not self.run_root_dir:
-            self.run_root_dir = os.path.join(self.root_dir, "openvla/DPO_res")
+        # if not self.run_root_dir:
+        #     self.run_root_dir = os.path.join(self.root_dir, "openvla/DPO_res")

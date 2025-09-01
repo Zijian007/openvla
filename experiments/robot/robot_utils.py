@@ -81,11 +81,11 @@ def get_action_ids(cfg, model, obs, task_label, processor=None):
         raise ValueError("Unexpected `model_family` found in config.")
     return action_ids
 
-def get_CoA(cfg, model, obs, task_label, processor=None, num_act_units:int=100)->List[np.ndarray]:
+def get_CoA(cfg, model, obs, task_label, processor=None, num_act_units:int=100, human_prompt_template: str = "What action should the robot take to {lang}?")->List[np.ndarray]:
     """Queries the model to get an action."""
     if cfg.model_family == "openvla":
         action = get_vla_CoA(
-            model, processor, cfg.pretrained_checkpoint, obs, task_label, cfg.unnorm_key, center_crop = cfg.center_crop, num_act_units=num_act_units
+            model, processor, cfg.pretrained_checkpoint, obs, task_label, cfg.unnorm_key, center_crop = cfg.center_crop, num_act_units=num_act_units, human_prompt_template=human_prompt_template
         )
         # assert action.shape == (ACTION_DIM,), f"Action shape: {action.shape}"
         # assert action.shape[1] % (ACTION_DIM + 1) == 0, f"Action shape {action.shape} is not divisible by {ACTION_DIM + 1}"

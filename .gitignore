@@ -164,3 +164,4 @@ experiments/logs/
 DPO_adapter_tmp_dir
 
 vla-scripts/DPO/src/experiments
+vla-scripts/DPO/src/test_video

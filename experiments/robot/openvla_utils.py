@@ -262,7 +262,7 @@ def get_vla_action_ids(vla, processor, base_vla_name, obs, task_label, unnorm_ke
     return action_ids
 
 
-def get_vla_CoA(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, num_act_units:int=100):
+def get_vla_CoA(vla, processor, base_vla_name, obs, task_label, unnorm_key, center_crop=False, num_act_units:int=100, human_prompt_template: str = "What action should the robot take to {lang}?"):
     """Generates an action with the VLA policy."""
     image = Image.fromarray(obs["full_image"])
     image = image.convert("RGB")
@@ -295,10 +295,10 @@ def get_vla_CoA(vla, processor, base_vla_name, obs, task_label, unnorm_key, cent
     # Build VLA prompt
     if "openvla-v01" in base_vla_name:  # OpenVLA v0.1
         prompt = (
-            f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT:"
+            f"{OPENVLA_V01_SYSTEM_PROMPT} USER: {human_prompt_template.format(lang=task_label.lower())}? ASSISTANT:"
         )
     else:  # OpenVLA
-        prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
+        prompt = f"In: {human_prompt_template.format(lang=task_label.lower())}?\nOut:"
 
     # Process inputs.
     inputs = processor(prompt, image).to(vla.device, dtype=torch.bfloat16)

@@ -1,43 +1,7 @@
 export HF_HUB_CACHE=/mnt/sda/home/zijianwang/HF_CACHE
-
-# This is a text message
-# This is a text message2
-
-# This is a text message in lab0
-# This is a text message3
-
-# This is a new text message in lab2
-
-# This is a new new text message in lab2
-
-# This is a new new new text message in lab2
-
-# This is a new new new new text message in lab0
-
-# This is a 5*new text message in lab0
-# This is a 6*new text message in lab0
-
-# This is a 7*new text message in lab0
-
-# This is a 8*new text message in lab0
-
-# This is a 9*new text message in lab0
-
-# This is a 10*new text message in lab0
-
-# This is a 11*new text message in lab2
-
-
-
-
-
-
-
-
-# This is a 9*new text message in lab2
-
 # Define path variables
-ROOT_DIR="/hdd/zijianwang"
+# ROOT_DIR="/hdd/zijianwang"
+ROOT_DIR="/mnt/sda/home/zijianwang"
 PRETRAINED_CHECKPOINT="${ROOT_DIR}/openvla/FT_res/openvla-7b-finetuned-libero-10+libero_10_no_noops+b4+lr-0.0005+lora-r48+dropout-0.0--image_aug--2025-07-18_19-26-25"
 LORA_PATH="${ROOT_DIR}/openvla/adapter_tmp_dir/openvla-7b-finetuned-libero-10+libero_10_no_noops+b4+lr-0.0005+lora-r48+dropout-0.0--image_aug--2025-07-18_19-26-25"
 BASE_VLA_PATH="${ROOT_DIR}/HF_CACHE/openvla-7b-finetuned-libero-10"
@@ -52,11 +16,10 @@ WANDB_ENTITY="15652388600"
 # libero_spatial_no_noops, libero_object_no_noops, libero_goal_no_noops: lora24, libero_10_no_noops
 python vla-scripts/DPO/dpo_main.py \
   --device cuda:1 \
-  --ref-device cuda:0 \
-  --max-steps 500 \
+  --ref-device cuda:2 \
+  --max-steps 1000 \
   --batch-size 1 \
-  --dpo-beta 0.5 \
-  --stream-length 20 \
+  --stream-length 16 \
   --task-num 1 \
   --root-dir "${ROOT_DIR}" \
   --pretrained-checkpoint "${PRETRAINED_CHECKPOINT}" \

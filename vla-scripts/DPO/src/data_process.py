@@ -32,7 +32,7 @@ OPENVLA_V01_SYSTEM_PROMPT = (
 from torch.utils.data import Dataset
 
 class TrajectoryDataset(Dataset):
-    def __init__(self, cfg, winner_folder_path, task_suite_name, processor, env, task_suite, device, model, img_size = 224, stream_length = 10, task_num = None, if_offline = False):
+    def __init__(self, cfg, winner_folder_path, task_suite_name, processor, env, task_suite, device, model, img_size = 224, stream_length = 10, task_num = None, if_fixed_stream_length = False, if_offline = False, human_prompt_template: str = "What action should the robot take to {lang}?"):
         self.winner_folder_path = winner_folder_path
         self.task_suite_name = task_suite_name
         self.data_path = os.path.join(self.winner_folder_path, self.task_suite_name)
@@ -40,168 +40,172 @@ class TrajectoryDataset(Dataset):
         self.processor = processor
         self.device = device
         self.cfg = cfg
-        self.stream_length = stream_length
         self.img_size = img_size
+        self.fixed_stream_length = stream_length
         self.task_num = task_num
         self.env = env
         self.task_suite = task_suite
+        self.if_fixed_stream_length = if_fixed_stream_length
         self.if_offline = if_offline
-
+        self.human_prompt_template = human_prompt_template
         if self.if_offline == True:
-            self.complete_loser_trajectory = self.get_complete_loser_trajectory(self.data_path)
+            self.complete_loser_trajectory = self.get_loser_completion_traj(self.cfg, self.env, self.task_suite, self.model, self.data_path)
 
-            
         # Get list of all trajectory folders (only success trajectories)
         self.trajectory_folders = []
         self.task_trajectories = {}  # Dictionary to store trajectories by task number
+        # First pass: collect all trajectories with their lengths
+        task_trajectories_with_lengths = {}
         for folder_name in os.listdir(self.data_path):
-            match = re.search(r"task_(\d+)_episode_(\d+)_(failure|success)", folder_name)
+            match = re.search(r"task_(\d+)_episode_(-?\d+)_(failure|success)", folder_name)
             if match and match.group(3) == "success":
                 task_num = match.group(1)
-                if task_num not in self.task_trajectories:
-                    self.task_trajectories[task_num] = []
+                
+                # Count pkl files in this trajectory folder
+                trajectory_folder_path = os.path.join(self.data_path, folder_name)
+                pkl_files = [f for f in os.listdir(trajectory_folder_path) if f.endswith(".pkl")]
+                traj_len = len(pkl_files)
+                
+                if task_num not in task_trajectories_with_lengths:
+                    task_trajectories_with_lengths[task_num] = []
+                task_trajectories_with_lengths[task_num].append((folder_name, traj_len))
+        
+        # Second pass: select shortest 10 trajectories per task
+        for task_num, trajectories_with_lengths in task_trajectories_with_lengths.items():
+            # Sort by trajectory length (ascending)
+            trajectories_with_lengths.sort(key=lambda x: x[1])
+            
+            # Take the shortest 10 trajectories
+            shortest_trajectories = trajectories_with_lengths[:6]
+            
+            if task_num not in self.task_trajectories:
+                self.task_trajectories[task_num] = []
+            
+            for folder_name, traj_len in shortest_trajectories:
                 self.task_trajectories[task_num].append(folder_name)
                 self.trajectory_folders.append(folder_name)
+
+
         print(f"Found {len(self.trajectory_folders)} success trajectories")
         print(f"Task distribution: {[(task, len(folders)) for task, folders in self.task_trajectories.items()]}")
 
-    def get_winner_completion_ids(self, traj, start_idx):
-        action_chain = []
-        state_chain = []
-        action_sperate_token_id = 32001 # <A>
-        for action, state in zip(traj["action"][start_idx:start_idx + self.stream_length], traj["state"][start_idx:start_idx + self.stream_length]):
-            # assert action[-1] == 32001, f"Action {action} does not end with separator token 32001 in winner trajectory sampling"
-            action_chain.extend(action.tolist())  # Add the action tokens
-            # action_chain.append(action_sperate_token_id)  # Add separator token after each action
-            state_chain.append(state)
-            # Ensure action_chain length is a multiple of 8
-            assert len(action_chain) % 8 == 0, f"Action chain length {len(action_chain)} is not a multiple of 8"
+    def get_loser_completion_traj(self, cfg, env, task_suite, model, trajectory):
+            loser_trajectory = {
+                "task_num": trajectory["task_num"], 
+                "episode_num": trajectory["episode_num"], 
+                "result": trajectory["result"],
+                "task_description": trajectory["task_description"],
+                "state": [], 
+                "action": []
+            }
+            ACTION_DIM = 7
+            action_sperate_token_id = 32001
+            task_description = trajectory["task_description"]
+            initial_states = task_suite.get_task_init_states(int(trajectory["task_num"]))
+            env.reset()
+            obs = env.set_init_state(initial_states[int(trajectory["episode_num"])])
+            CoA_step = 0
+            total_length = 0
+            max_steps = 550
+            while total_length < max_steps + cfg.num_steps_wait:
+                try:
+                    # IMPORTANT: Do nothing for the first few timesteps because the simulator drops objects
+                    # and we need to wait for them to fall
+                    if total_length < cfg.num_steps_wait:
+                        obs, reward, done, info = env.step(get_libero_dummy_action(cfg.model_family))
+                        total_length += 1
+                        continue
+                    img = get_libero_image(obs, self.img_size) #np.array [224, 224, 3]
+                        # Prepare observations dict
+                        # Note: OpenVLA does not take proprio state as input
+                    observation = {
+                        "full_image": img,
+                        "state": np.concatenate(
+                            (obs["robot0_eef_pos"], quat2axisangle(obs["robot0_eef_quat"]), obs["robot0_gripper_qpos"])
+                        ),
+                        }
+                    CoA:List[np.ndarray] = get_CoA(
+                        cfg,
+                        model,
+                        observation,
+                        task_description,
+                        processor = self.processor,
+                        num_act_units = self.stream_length,
+                    ) 
+                    CoA_step += 1 
+                    current_CoA_length = len(CoA)
+                    total_length = total_length + current_CoA_length
+                    for unit_idx, action in enumerate(CoA):
+                        action = action.tolist()
+                        obs, reward, done, info = env.step(action)
+                        action.append(action_sperate_token_id)
+                        loser_trajectory["action"].extend(action)
+                        loser_trajectory["state"].append(obs)
+                except Exception as e:
+                    print(f"Caught exception in collect loser completion ids in data_process.py: {e}")
+                    break
+            return loser_trajectory
+    # def get_winner_completion_ids(self, traj, start_idx):
+    #     action_chain = []
+    #     state_chain = []
+    #     action_sperate_token_id = 32001 # <A>
+    #     for action, state in zip(traj["action"][start_idx:start_idx + self.stream_length], traj["state"][start_idx:start_idx + self.stream_length]):
+    #         # assert action[-1] == 32001, f"Action {action} does not end with separator token 32001 in winner trajectory sampling"
+    #         action_chain.extend(action.tolist())  # Add the action tokens
+    #         # action_chain.append(action_sperate_token_id)  # Add separator token after each action
+    #         state_chain.append(state)
+    #         # Ensure action_chain length is a multiple of 8
+    #         assert len(action_chain) % 8 == 0, f"Action chain length {len(action_chain)} is not a multiple of 8"
 
-        action_chain = torch.tensor(action_chain).to(self.device)
-        winner_completion_ids = action_chain
-        return winner_completion_ids, state_chain
+    #     action_chain = torch.tensor(action_chain).to(self.device)
+    #     winner_completion_ids = action_chain
+    #     return winner_completion_ids, state_chain
 
-    def get_loser_completion_ids(self, initial_state):
-        ACTION_DIM = 7
-        # loser_completion_ids = self.model.get_CoA(**initial_state, unnorm_key=self.cfg.unnorm_key, num_act_units=self.cfg.num_act_units)
-        input_ids = initial_state['input_ids']
+    # def get_initial_state(self, traj, base_vla_name, processor, device, center_crop=True) -> tuple[dict, int]:
+    #     # 返回的inputs是processor处理后的结果, 包括input_ids, attention_mask, pixel_values
+    #     start_idx = random.randint(0, len(traj["state"]) - self.stream_length)
+    #     obs = traj["state"][start_idx]
+    #     task_label = traj["task_description"]
+    #     img = get_libero_image(obs, self.img_size)
+    #     image = Image.fromarray(img)
+    #     image = image.convert("RGB")
+    #     # (If trained with image augmentations) Center crop image and then resize back up to original size.
+    #     # IMPORTANT: Let's say crop scale == 0.9. To get the new height and width (post-crop), multiply
+    #     #            the original height and width by sqrt(0.9) -- not 0.9!
+    #     if center_crop:
+    #         batch_size = 1
+    #         crop_scale = 0.9
 
-        if not torch.all(input_ids[:, -1] == 29871):
-            input_ids = torch.cat(
-                (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
-            )
+    #         # Convert to TF Tensor and record original data type (should be tf.uint8)
+    #         image = tf.convert_to_tensor(np.array(image))
+    #         orig_dtype = image.dtype
 
-        initial_state['input_ids'] = input_ids
-        max_new_tokens = (self.model.get_action_dim(self.cfg.unnorm_key) + 1)*self.stream_length
-        assert self.model.get_action_dim(self.cfg.unnorm_key) == 7, f"Action dim {self.model.get_action_dim(self.cfg.unnorm_key)} is not 7"
-        generated_ids = self.model.generate(max_new_tokens = max_new_tokens, **initial_state, do_sample = True, top_k = 1)
-        # assert (generated_ids.shape[1] - input_ids.shape[1]) % (ACTION_DIM + 1) == 0, f"Action shape {generated_ids.shape} is not divisible by {ACTION_DIM + 1}"
-        chain = generated_ids[:,input_ids.shape[1]:]
-        loser_completion_ids = chain
+    #         # Convert to data type tf.float32 and values between [0,1]
+    #         image = tf.image.convert_image_dtype(image, tf.float32)
 
-        # state_chain = execute_action_chain_ids(self.cfg, self.env, self.task_suite, self.model, loser_completion_ids)
+    #         # Crop and then resize back to original size
+    #         image = crop_and_resize(image, crop_scale, batch_size)
 
-        # state_chain = execute_action_chain(self.env, processed_units)
-        return loser_completion_ids, initial_state
+    #         # Convert back to original data type
+    #         image = tf.clip_by_value(image, 0, 1)
+    #         image = tf.image.convert_image_dtype(image, orig_dtype, saturate=True)
 
-    def get_trajectory_data(self, idx):
-        if self.task_num is not None:
-            folder_name = self.task_trajectories[str(self.task_num)][idx]
-        else:
-            folder_name = self.trajectory_folders[idx]
-        
-        # Parse folder name
-        match = re.search(r"task_(\d+)_episode_(\d+)_(failure|success)", folder_name)
-        if match:
-            task_num = match.group(1)
-            episode_num = match.group(2)
-            result = match.group(3)
-        else:
-            raise ValueError(f"Invalid folder name: {folder_name}")
+    #         # Convert back to PIL Image
+    #         image = Image.fromarray(image.numpy())
+    #         image = image.convert("RGB")
+    #     # Build VLA prompt
+    #     if "openvla-v01" in base_vla_name:  # OpenVLA v0.1
+    #         prompt = (
+    #             f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT:"
+    #         )
+    #     else:  # OpenVLA
+    #         prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
 
-        task_description = get_task_description(self.task_suite_name, int(task_num))
-        
-        # Load trajectory data
-        trajectory_folder_path = os.path.join(self.data_path, folder_name)
-        trajectory = {
-            "task_num": task_num, 
-            "episode_num": episode_num, 
-            "result": result,
-            "task_description": task_description,
-            "state": [], 
-            "action": []
-        }
-        # Read all pickle files in the trajectory folder
-        pkl_files = [f for f in os.listdir(trajectory_folder_path) if f.endswith(".pkl")]
-        # Sort pkl files by step number
-        pkl_files.sort(key=lambda x: int(re.search(r'step_(\d+)\.pkl', x).group(1)))
-        # start_idx = random.randint(0, len(pkl_files) - 5)
-        start_idx = 0
-        action_sperate_token_id = 32001
-        for i in range(start_idx, len(pkl_files)):
-            with open(os.path.join(trajectory_folder_path, pkl_files[i]), "rb") as f:
-                data = pickle.load(f)
-                state = data["obs"]
-                trajectory["state"].append(state)
+    #     # Process inputs.
+    #     inputs = processor(prompt, image).to(device, dtype=torch.bfloat16)
+    #     return inputs, start_idx
 
-                action = data["action_ids"].tolist()
-                action.append(action_sperate_token_id)
-                trajectory["action"].extend(action)
-
-        trajectory["action"] = torch.tensor(trajectory["action"]).unsqueeze(0)
-        return trajectory
-        # trajectory is a dictionary containing:
-        # - "task_num": str, task number extracted from folder name
-        # - "episode_num": str, episode number extracted from folder name  
-        # - "result": str, either "success" or "failure"
-        # - "state": list, will contain observation dictionaries for each step
-        # - "action": list, will contain action_ids (tokenized actions) for each step
-
-    def get_initial_state(self, traj, base_vla_name, processor, device, center_crop=True) -> tuple[dict, int]:
-        # 返回的inputs是processor处理后的结果, 包括input_ids, attention_mask, pixel_values
-        start_idx = random.randint(0, len(traj["state"]) - self.stream_length)
-        obs = traj["state"][start_idx]
-        task_label = traj["task_description"]
-        img = get_libero_image(obs, self.img_size)
-        image = Image.fromarray(img)
-        image = image.convert("RGB")
-        # (If trained with image augmentations) Center crop image and then resize back up to original size.
-        # IMPORTANT: Let's say crop scale == 0.9. To get the new height and width (post-crop), multiply
-        #            the original height and width by sqrt(0.9) -- not 0.9!
-        if center_crop:
-            batch_size = 1
-            crop_scale = 0.9
-
-            # Convert to TF Tensor and record original data type (should be tf.uint8)
-            image = tf.convert_to_tensor(np.array(image))
-            orig_dtype = image.dtype
-
-            # Convert to data type tf.float32 and values between [0,1]
-            image = tf.image.convert_image_dtype(image, tf.float32)
-
-            # Crop and then resize back to original size
-            image = crop_and_resize(image, crop_scale, batch_size)
-
-            # Convert back to original data type
-            image = tf.clip_by_value(image, 0, 1)
-            image = tf.image.convert_image_dtype(image, orig_dtype, saturate=True)
-
-            # Convert back to PIL Image
-            image = Image.fromarray(image.numpy())
-            image = image.convert("RGB")
-        # Build VLA prompt
-        if "openvla-v01" in base_vla_name:  # OpenVLA v0.1
-            prompt = (
-                f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT:"
-            )
-        else:  # OpenVLA
-            prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
-
-        # Process inputs.
-        inputs = processor(prompt, image).to(device, dtype=torch.bfloat16)
-        return inputs, start_idx
-
-    def get_initial_state_for_loser(self, obs, task_label, base_vla_name, processor, device, center_crop=True)->tuple[dict, int]:
+    def get_initial_state_for_loser(self, obs, task_label, base_vla_name, processor, device, human_prompt_template: str = "What action should the robot take to {lang}?", center_crop=True)->tuple[dict, int]:
         # 返回的inputs是processor处理后的结果, 包括input_ids, attention_mask, pixel_values
         # obs = traj["state"][start_idx]
         # task_label = traj["task_description"]
@@ -235,16 +239,99 @@ class TrajectoryDataset(Dataset):
         # Build VLA prompt
         if "openvla-v01" in base_vla_name:  # OpenVLA v0.1
             prompt = (
-                f"{OPENVLA_V01_SYSTEM_PROMPT} USER: What action should the robot take to {task_label.lower()}? ASSISTANT:"
+                f"{OPENVLA_V01_SYSTEM_PROMPT} USER: {human_prompt_template.format(lang=task_label.lower())}? ASSISTANT:"
             )
         else:  # OpenVLA
-            prompt = f"In: What action should the robot take to {task_label.lower()}?\nOut:"
-
+            prompt = f"In: {human_prompt_template.format(lang=task_label.lower())}?\nOut:"
+        print(f"**Prompt**: {prompt}")
         # Process inputs.
         inputs = processor(prompt, image).to(device, dtype=torch.bfloat16)
         return inputs
 
-    def execute_action_chain_ids(self, cfg, env, task_suite, model, trajectory, start_idx):
+    
+    def __len__(self):
+        if self.task_num is not None:
+            return len(self.task_trajectories[str(self.task_num)])
+        else:
+            return len(self.trajectory_folders)
+
+    def get_trajectory_data(self, idx):
+        if self.task_num is not None:
+            folder_name = self.task_trajectories[str(self.task_num)][idx]
+        else:
+            folder_name = self.trajectory_folders[idx]
+        
+        # Parse folder name
+        match = re.search(r"task_(\d+)_episode_(-?\d+)_(failure|success)", folder_name)
+        if match:
+            task_num = match.group(1)
+            episode_num = match.group(2)
+            result = match.group(3)
+        else:
+            raise ValueError(f"Invalid folder name: {folder_name}")
+
+        task_description = get_task_description(self.task_suite_name, int(task_num))
+        
+        # Load trajectory data
+        trajectory_folder_path = os.path.join(self.data_path, folder_name)
+        trajectory = {
+            "task_num": task_num, 
+            "episode_num": episode_num, 
+            "result": result,
+            "task_description": task_description,
+            "state": [], 
+            "action": []
+        }
+        # Read all pickle files in the trajectory folder
+        pkl_files = [f for f in os.listdir(trajectory_folder_path) if f.endswith(".pkl")]
+        # Sort pkl files by step number
+        pkl_files.sort(key=lambda x: int(re.search(r'step_(\d+)\.pkl', x).group(1)))
+        # start_idx = random.randint(0, len(pkl_files) - 5)
+        start_idx = 0
+        action_sperate_token_id = 32001
+        for i in range(start_idx, len(pkl_files)):
+            with open(os.path.join(trajectory_folder_path, pkl_files[i]), "rb") as f:
+                data = pickle.load(f)
+                state = data["obs"]
+                trajectory["state"].append(state)
+                action = data["action_ids"].tolist()
+                if len(action) == 7:
+                    action.append(action_sperate_token_id)
+                trajectory["action"].extend(action)
+
+        trajectory["action"] = torch.tensor(trajectory["action"]).unsqueeze(0)
+        return trajectory
+        # trajectory is a dictionary containing:
+        # - "task_num": str, task number extracted from folder name
+        # - "episode_num": str, episode number extracted from folder name  
+        # - "result": str, either "success" or "failure"
+        # - "state": list, will contain observation dictionaries for each step
+        # - "action": list, will contain action_ids (tokenized actions) for each step
+
+    def get_loser_completion_ids(self, initial_state, stream_length):
+        ACTION_DIM = 7
+        # loser_completion_ids = self.model.get_CoA(**initial_state, unnorm_key=self.cfg.unnorm_key, num_act_units=self.cfg.num_act_units)
+        input_ids = initial_state['input_ids']
+
+        if not torch.all(input_ids[:, -1] == 29871):
+            input_ids = torch.cat(
+                (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
+            )
+
+        initial_state['input_ids'] = input_ids
+        max_new_tokens = (self.model.get_action_dim(self.cfg.unnorm_key) + 1) * stream_length
+        assert self.model.get_action_dim(self.cfg.unnorm_key) == 7, f"Action dim {self.model.get_action_dim(self.cfg.unnorm_key)} is not 7"
+        generated_ids = self.model.generate(max_new_tokens = max_new_tokens, **initial_state, do_sample = True, top_k = 1)
+        # assert (generated_ids.shape[1] - input_ids.shape[1]) % (ACTION_DIM + 1) == 0, f"Action shape {generated_ids.shape} is not divisible by {ACTION_DIM + 1}"
+        chain = generated_ids[:,input_ids.shape[1]:]
+        loser_completion_ids = chain
+
+        # state_chain = execute_action_chain_ids(self.cfg, self.env, self.task_suite, self.model, loser_completion_ids)
+
+        # state_chain = execute_action_chain(self.env, processed_units)
+        return loser_completion_ids, initial_state
+
+    def execute_action_chain_ids(self, cfg, env, task_suite, model, trajectory, start_idx, stream_length):
         ACTION_DIM = 7
         task_label = trajectory["task_description"]
         initial_states = task_suite.get_task_init_states(int(trajectory["task_num"]))
@@ -261,22 +348,21 @@ class TrajectoryDataset(Dataset):
         while total_length < cfg.num_steps_wait + 550:
             if total_length < cfg.num_steps_wait:
                 obs, reward, done, info = env.step(get_libero_dummy_action(cfg.model_family))
-                
-                # winner_state_chain.append(obs)
                 total_length += 1
                 continue
             winner_action = processed_units[action_idx]
             obs, reward, done, info = env.step(winner_action.tolist())
-            recorder_state = trajectory["state"][action_idx+1]
-            # winner_state_chain.append(obs)
+            recorded_state = trajectory["state"][action_idx + 1]
+            # 声明obs和recorded_state的['robot0_eef_pos']一样
+            # assert np.allclose(obs['robot0_eef_pos'], recorded_state['robot0_eef_pos'], atol=1e-6), \
+            #     f"obs['robot0_eef_pos'] {np.array(obs['robot0_eef_pos'])} != recorded_state['robot0_eef_pos'] {np.array(recorded_state['robot0_eef_pos'])}"
             total_length += 1
             action_idx += 1
             assert action_idx == total_length - cfg.num_steps_wait, f"action_idx {action_idx} is not equal to total_length {total_length} - cfg.num_steps_wait {cfg.num_steps_wait}"
 
             if total_length >= start_idx:  # begin to get loser action stream
-                initial_state = self.get_initial_state_for_loser(obs, task_label, self.cfg.pretrained_checkpoint, self.processor, self.device)
-
-                loser_completion_ids, initial_state = self.get_loser_completion_ids(initial_state) # [1, seq_len]
+                initial_state = self.get_initial_state_for_loser(obs, task_label, self.cfg.pretrained_checkpoint, self.processor, self.device, human_prompt_template=self.human_prompt_template)
+                loser_completion_ids, initial_state = self.get_loser_completion_ids(initial_state, stream_length) # [1, seq_len]
                 loser_units: List[torch.Tensor] = spilt_chain_to_units(loser_completion_ids, cfg.unnorm_key)
                 loser_processed_units: List[np.ndarray] = process_action_unit(model, loser_units, cfg.unnorm_key)
                 loser_state_chain = []
@@ -284,7 +370,7 @@ class TrajectoryDataset(Dataset):
                     loser_obs, loser_reward, loser_done, loser_info = env.step(loser_action.tolist())
                     loser_state_chain.append(loser_obs)
 
-                winner_completion_ids = winner_action_chain[:, action_idx * (ACTION_DIM+1) : (action_idx + self.stream_length) * (ACTION_DIM+1)]
+                winner_completion_ids = winner_action_chain[:, action_idx * (ACTION_DIM+1) : (action_idx + stream_length) * (ACTION_DIM+1)]
                 winner_units: List[torch.Tensor] = spilt_chain_to_units(winner_completion_ids, cfg.unnorm_key)
                 winner_processed_units: List[np.ndarray] = process_action_unit(model, winner_units, cfg.unnorm_key)
                 winner_state_chain = []
@@ -295,26 +381,21 @@ class TrajectoryDataset(Dataset):
         # print("done:", done)
         return winner_completion_ids, loser_completion_ids, winner_state_chain, loser_state_chain, initial_state
 
-
-    def get_complete_loser_trajectory(self, traj, start_idx):
-        pass
-    
-    def __len__(self):
-        if self.task_num is not None:
-            return len(self.task_trajectories[str(self.task_num)])
-        else:
-            return len(self.trajectory_folders)
-    
-    def __getitem__(self, idx) -> dict:
+    def __getitem__(self, idx):
         trajectory = self.get_trajectory_data(idx)
+        if self.if_fixed_stream_length == True:
+            stream_length = self.fixed_stream_length
+        else:
+            stream_length = random.randint(3, 20)
+        print(f"The if_fixed_stream_length is {self.if_fixed_stream_length}, the stream_length is **{stream_length}**")
         if self.if_offline == False:
-            start_idx = random.randint(0, len(trajectory["state"]) - self.stream_length-1)
+            start_idx = random.randint(0, len(trajectory["state"]) - stream_length -1)
             start_idx = start_idx + self.cfg.num_steps_wait
-            winner_completion_ids, loser_completion_ids, winner_state_chain, loser_state_chain, initial_state = self.execute_action_chain_ids(self.cfg, self.env, self.task_suite, self.model, trajectory, start_idx)
+            winner_completion_ids, loser_completion_ids, winner_state_chain, loser_state_chain, initial_state = self.execute_action_chain_ids(self.cfg, self.env, self.task_suite, self.model, trajectory, start_idx, stream_length)
             distance = calculate_average_euclidean_distance(winner_state_chain, loser_state_chain)
             input_ids = initial_state['input_ids']
             pixel_values = initial_state['pixel_values']
-            return {"prompt_input_ids":input_ids[0], "pixel_values": pixel_values[0], "chosen_input_ids": winner_completion_ids[0], "rejected_input_ids": loser_completion_ids[0], "distance": distance}
+            return {"prompt_input_ids":input_ids[0], "pixel_values": pixel_values[0], "chosen_input_ids": winner_completion_ids[0], "rejected_input_ids": loser_completion_ids[0], "distance": distance, "start_idx": start_idx}
         elif self.if_offline == True:
             # complete_loser_trajectory = self.get_complete_loser_trajectory(trajectory, start_idx)
             complete_winner_trajectory = None
